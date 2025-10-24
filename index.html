@@ -6,6 +6,9 @@
     <title>進階旅遊分帳與清算器</title>
     <!-- 載入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDK (v9 compat via CDN) -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/exceljs/dist/exceljs.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
@@ -46,8 +49,8 @@
     <div class="max-w-4xl mx-auto space-y-8">
 
         <header class="text-center pb-4">
-            <h1 class="text-4xl font-extrabold text-gray-800">💰 旅遊分帳與清算器 ✈️</h1>
-            <p class="text-gray-500 mt-2">輕鬆追蹤團體支出，計算最簡清算路徑。</p>
+            <h1 class="text-4xl font-extrabold text-gray-800">💰 記帳工具</h1>
+            <p class="text-gray-500 mt-2" id="current-trip-display">行程載入中...</p>
         </header>
         
         <!-- 訊息彈窗 (用來取代 alert) -->
@@ -163,15 +166,16 @@
             <h2 class="text-2xl font-bold mb-4 text-indigo-100">💰 結算總覽</h2>
             <div class="flex flex-wrap gap-3 mb-4">
                 <span class="inline-flex items-center px-3 py-1 rounded-full bg-indigo-600 text-sm">
-                  此行程總花費 (TWD): <strong class="ml-2" id="trip-total-twd">0</strong>
+                  <span id="trip-total-label">行程總花費 (TWD):</span>
+                  <strong class="ml-2" id="trip-total-twd">0</strong>
                 </span>
             </div>
             <div id="should-spend-badges" class="flex flex-wrap gap-2 mb-4"></div>
             
             <div class="grid grid-cols-4 text-sm font-medium mb-2 pb-2 border-b border-indigo-400/50">
                 <span>成員</span>
-                <span class="text-center">已付 (TWD)</span>
-                <span class="text-center">應花 (TWD)</span>
+                <span class="text-center">實際支出 (TWD)</span>
+                <span class="text-center">理論支出 (TWD)</span>
                 <span class="text-center">淨額 (TWD)</span>
             </div>
 
@@ -293,6 +297,15 @@
                     </div>
                     <p class="text-xs text-gray-400 mt-2" id="rate-last-updated"></p>
                 </div>
+                <div class="mt-6 border-t pt-4">
+                  <h3 class="text-xl font-bold text-gray-700 mb-3">雲端同步</h3>
+                  <div class="flex flex-wrap items-center gap-2 mb-2">
+                    <input id="trip-code-input" type="text" placeholder="輸入共享代碼" class="flex-1 p-2 border border-gray-300 rounded-lg text-sm" />
+                    <button id="cloud-link" class="px-3 py-1 bg-indigo-600 text-white rounded text-sm">Link</button>
+                    <button id="cloud-cancel" class="px-3 py-1 bg-gray-600 text-white rounded text-sm">Cancel Sync</button>
+                  </div>
+                  <p class="text-xs text-gray-500" id="cloud-status">未同步</p>
+                </div>
             </div>
         </div>
 
@@ -308,6 +321,18 @@
     </div>
 
     <script>
+        // Firebase init (fill YOUR_API_KEY and YOUR_PROJECT_ID in production)
+        const firebaseConfig = {
+          apiKey: "YOUR_API_KEY",
+          authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+          projectId: "YOUR_PROJECT_ID",
+        };
+        if (window.firebase && !firebase.apps.length) {
+          firebase.initializeApp(firebaseConfig);
+        }
+        const db = window.firebase ? firebase.firestore() : null;
+        if (db && db.enablePersistence) { try { db.enablePersistence(); } catch(e) {} }
+
         // --- 核心資料結構 ---
         let trips = []; // 行程列表
         let lastEditedTripId = null;   // 新增：最後編輯的行程 ID
@@ -317,6 +342,21 @@
         let currentPayer = null;
         let currentSharers = [];
         let currentCategory = '食'; // 預設類別
+
+        // Make header subtitle reflect current trip name (global, used by multiple functions)
+        function updateHeaderTripName() {
+          const tripDisplayEl = document.getElementById('current-trip-display');
+          if (!tripDisplayEl) return;
+          const t = trips.find(x => x.id === currentTripId);
+          tripDisplayEl.textContent = t ? t.name : '尚未選擇行程';
+        }
+
+        // Cloud sync state
+        let syncedTripId = null;
+        function setCloudStatus(text) {
+          const el = document.getElementById('cloud-status');
+          if (el) el.textContent = text;
+        }
 
         // 匯率資料結構 (可變動)
         let defaultExchangeRates = {
@@ -531,6 +571,208 @@
                 currentTripId = null;
                 showMessage("資料載入失敗，已使用預設值。", 'error');
             }
+        }
+        
+        // --- Cloud Sync Helpers (Firebase Firestore) ---
+        function genTripId(len = 24) {
+          const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+          let out = '';
+          for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+          return out;
+        }
+        function tripDocRef(tripId) { return db.collection('trips').doc(tripId); }
+        function membersColRef(tripId) { return tripDocRef(tripId).collection('members'); }
+        function expensesColRef(tripId) { return tripDocRef(tripId).collection('expenses'); }
+
+        function serializeLocalTrip() {
+          return {
+            name: (trips.find(t => t.id === currentTripId) || {}).name || '未命名行程',
+            baseCurrency: 'TWD',
+            exchangeRates: exchangeRates || { TWD: 1 },
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            updatedBy: 'web',
+            members: members.map(m => ({ id: m, name: m })),
+            expenses: expenses.filter(e => e.tripId === currentTripId)
+          };
+        }
+
+        async function hydrateLocalFromCloud(tripId) {
+          if (!db) { showMessage('Cloud not initialized', 'error'); return; }
+          const doc = await tripDocRef(tripId).get();
+          if (!doc.exists) throw new Error('Trip not found');
+          const data = doc.data() || {};
+          const memSnap = await membersColRef(tripId).get();
+          const expSnap = await expensesColRef(tripId).get();
+          const cloudMembers = memSnap.docs.map(d => (d.data() || {}).name).filter(Boolean);
+          const cloudExpenses = expSnap.docs.map(d => ({ id: d.id, ...(d.data() || {}) }));
+
+          // Write back to local storage format
+          exchangeRates = data.exchangeRates || { TWD: 1 };
+          localStorage.setItem('travel_rates', JSON.stringify(exchangeRates));
+          trips = [{ id: tripId, name: data.name || '未命名行程' }];
+          currentTripId = tripId;
+          localStorage.setItem('travel_trips', JSON.stringify(trips));
+          localStorage.setItem('travel_current_trip_id', currentTripId);
+          members = cloudMembers;
+          localStorage.setItem('travel_members', JSON.stringify(members));
+
+          const localExps = cloudExpenses.map(x => ({
+            id: x.id,
+            tripId: tripId,
+            description: x.description || '',
+            category: x.category || '',
+            amount: x.amount || 0,
+            currency: x.currency || 'TWD',
+            rateAtCreation: x.rateAtCreation != null ? x.rateAtCreation : 1,
+            payer: x.payer || '',
+            sharers: Array.isArray(x.sharers) ? x.sharers : [],
+            customSplit: x.customSplit || null,
+            createdAt: x.createdAt || new Date().toISOString()
+          }));
+          expenses = localExps;
+          localStorage.setItem('travel_expenses', JSON.stringify(expenses));
+
+          // Re-render
+          renderTrips();
+          switchToTrip(currentTripId);
+        }
+
+        async function pushTripToCloud(tripId) {
+          if (!db) { showMessage('Cloud not initialized', 'error'); return; }
+          const snap = serializeLocalTrip();
+          // upsert main trip
+          await tripDocRef(tripId).set({
+            name: snap.name,
+            baseCurrency: snap.baseCurrency,
+            exchangeRates: snap.exchangeRates,
+            updatedAt: new Date().toISOString(),
+            updatedBy: 'web'
+          }, { merge: true });
+
+          // replace members
+          const memRef = membersColRef(tripId);
+          const memDocs = await memRef.get();
+          const batch = db.batch();
+          memDocs.forEach(d => batch.delete(d.ref));
+          snap.members.forEach(m => {
+            const ref = memRef.doc(m.id);
+            batch.set(ref, { name: m.name, updatedAt: new Date().toISOString(), updatedBy: 'web' });
+          });
+          await batch.commit();
+
+          // replace expenses
+          const expRef = expensesColRef(tripId);
+          const expDocs = await expRef.get();
+          const batch2 = db.batch();
+          expDocs.forEach(d => batch2.delete(d.ref));
+          snap.expenses.forEach(e => {
+            const id = e.id || db.collection('_').doc().id;
+            const ref = expRef.doc(id);
+            batch2.set(ref, {
+              description: e.description,
+              category: e.category,
+              amount: e.amount,
+              currency: e.currency,
+              rateAtCreation: e.rateAtCreation != null ? e.rateAtCreation : 1,
+              payer: e.payer,
+              sharers: e.sharers || [],
+              customSplit: e.customSplit || null,
+              createdAt: e.createdAt || new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              updatedBy: 'web'
+            });
+          });
+          await batch2.commit();
+        }
+
+        let unsubscribeCloud = null;
+        function subscribeTrip(tripId) {
+          if (!db) { showMessage('Cloud not initialized', 'error'); return; }
+          if (unsubscribeCloud) { unsubscribeCloud(); unsubscribeCloud = null; }
+          const unsubTrip = tripDocRef(tripId).onSnapshot(() => { /* optional header/rates updates */ });
+          const unsubMembers = membersColRef(tripId).onSnapshot(s => {
+            members = s.docs.map(d => (d.data() || {}).name).filter(Boolean);
+            localStorage.setItem('travel_members', JSON.stringify(members));
+            renderMembers(); calculateAndRenderSettlement();
+          });
+          const unsubExpenses = expensesColRef(tripId).onSnapshot(s => {
+            const list = s.docs.map(d => ({ id: d.id, ...(d.data() || {}), tripId }));
+            expenses = list;
+            localStorage.setItem('travel_expenses', JSON.stringify(expenses));
+            renderExpenses(); calculateAndRenderSettlement();
+          });
+          unsubscribeCloud = () => { unsubTrip(); unsubMembers(); unsubExpenses(); };
+        }
+
+        // mirror local -> cloud (overwrite members & expenses for current trip)
+        async function mirrorLocalToCloud(tripId) {
+          if (!db || !tripId) return;
+          const name = (trips.find(t => t.id === currentTripId) || {}).name || '未命名行程';
+          await tripDocRef(tripId).set({
+            name,
+            baseCurrency: 'TWD',
+            exchangeRates: exchangeRates || { TWD:1 },
+            updatedAt: new Date().toISOString(),
+            updatedBy: 'web'
+          }, { merge: true });
+
+          // overwrite members
+          const memRef = membersColRef(tripId);
+          const memDocs = await memRef.get();
+          const batch = db.batch();
+          memDocs.forEach(d => batch.delete(d.ref));
+          members.forEach(m => batch.set(memRef.doc(m), { name: m, updatedAt: new Date().toISOString(), updatedBy: 'web' }));
+          await batch.commit();
+
+          // overwrite expenses
+          const expRef = expensesColRef(tripId);
+          const expDocs = await expRef.get();
+          const batch2 = db.batch();
+          expDocs.forEach(d => batch2.delete(d.ref));
+          expenses.filter(e => e.tripId === currentTripId).forEach(e => {
+            const id = e.id || db.collection('_').doc().id;
+            batch2.set(expRef.doc(id), {
+              description: e.description || '',
+              category: e.category || '',
+              amount: e.amount || 0,
+              currency: e.currency || 'TWD',
+              rateAtCreation: e.rateAtCreation != null ? e.rateAtCreation : 1,
+              payer: e.payer || '',
+              sharers: Array.isArray(e.sharers) ? e.sharers : [],
+              customSplit: e.customSplit || null,
+              createdAt: e.createdAt || new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              updatedBy: 'web'
+            });
+          });
+          await batch2.commit();
+        }
+
+        // Link to a remote trip code: hydrate, set state, subscribe, then mirror once
+        async function linkToTripCode(code) {
+          if (!code) { showMessage('請輸入代碼', 'warning'); return; }
+          await hydrateLocalFromCloud(code);
+          syncedTripId = code;
+          setCloudStatus('已同步：' + code);
+          subscribeTrip(code);
+          try { await mirrorLocalToCloud(code); } catch(e) {}
+        }
+
+        // Cancel sync: unsubscribe and fork to a new local trip id
+        function cancelSync() {
+          if (typeof unsubscribeCloud === 'function') { unsubscribeCloud(); unsubscribeCloud = null; }
+          const newId = genTripId();
+          const idx = trips.findIndex(t => t.id === currentTripId);
+          if (idx >= 0) { trips[idx].id = newId; }
+          expenses = expenses.map(e => (e.tripId === currentTripId ? { ...e, tripId: newId } : e));
+          currentTripId = newId;
+          syncedTripId = null;
+          saveAllData();
+          renderTrips();
+          switchToTrip(currentTripId);
+          setCloudStatus('未同步');
+          showMessage('已取消同步，並複製為你的獨立行程。', 'success');
         }
 
         /**
@@ -1060,8 +1302,9 @@
             const name = tripNameInput.value.trim();
             console.log('嘗試新增行程:', name);
             if (name.length > 0 && !trips.some(trip => trip.name === name)) {
+                const id = genTripId();
                 const newTrip = {
-                    id: 'trip_' + Date.now(),
+                    id,
                     name: name,
                     createdAt: new Date().toISOString(),
                     members: []
@@ -1069,7 +1312,7 @@
                 trips.push(newTrip);
                 console.log('新增行程成功:', newTrip);
                 // 新行程自動成為當前行程
-                currentTripId = newTrip.id;
+                currentTripId = id;
                 markTripEdited(currentTripId);
                 tripNameInput.value = '';
                 // 清空成員列表，因為新行程沒有成員
@@ -1082,6 +1325,7 @@
                 renderShareChips();
                 saveAllData();
                 showMessage(`行程 "${name}" 已新增並設為當前行程！`, 'success');
+                updateHeaderTripName();
             } else if (name.length > 0) {
                 showMessage(`行程 "${name}" 已存在。`, 'warning');
             } else {
@@ -1125,6 +1369,7 @@
             if (tripSelectEl && tripSelectEl.value !== tripId) {
                 tripSelectEl.value = tripId;
             }
+            updateHeaderTripName();
         }
 
         /**
@@ -1178,6 +1423,7 @@
             }
 
             renderTrips();
+            updateHeaderTripName();
             renderExpenses();
             calculateAndRenderSettlement();
             // 更新最後編輯行程標記
@@ -1242,14 +1488,26 @@
                         <div class="flex-1">
                             <p class="font-medium text-gray-800 ${isActive ? 'text-blue-800' : ''}">${trip.name}</p>
                             <p class="text-xs text-gray-500">${tripExpenses.length} 筆支出</p>
+                            <div class="text-xs text-gray-400 mt-0.5">code: ${trip.id}</div>
                         </div>
                         <div class="flex items-center space-x-2">
                             ${!isActive ? `<button onclick="switchToTrip('${trip.id}')" class="text-xs text-blue-600 hover:text-blue-800 px-2 py-1 rounded hover:bg-blue-50">切換</button>` : ''}
+                            <button data-copy-code="${trip.id}" class="text-xs text-gray-700 bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded">Copy</button>
                             <button onclick="deleteTrip('${trip.id}')" class="text-xs text-red-600 hover:text-red-800 px-2 py-1 rounded hover:bg-red-50">刪除</button>
                         </div>
                     </div>
                 `;
-                
+                // Wire copy button
+                const copyBtn = tripItem.querySelector('[data-copy-code]');
+                if (copyBtn) {
+                    copyBtn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        try {
+                            await navigator.clipboard.writeText(trip.id);
+                            showMessage('Code copied', 'success');
+                        } catch (_) {}
+                    });
+                }
                 tripListEl.appendChild(tripItem);
             });
 
@@ -1840,6 +2098,11 @@
             });
             const totalEl = document.getElementById('trip-total-twd');
             if (totalEl) totalEl.textContent = formatAmount(Math.round(tripTotalTWD), 0);
+            const totalLabel = document.getElementById('trip-total-label');
+            if (totalLabel) {
+              const t = trips.find(x => x.id === currentTripId);
+              totalLabel.textContent = (t ? t.name : '此行程') + '總花費 (TWD):';
+            }
 
             // render per-member should-spend chips
             const badgesEl = document.getElementById('should-spend-badges');
@@ -2207,6 +2470,7 @@
             } else if (trips.length > 0) {
               switchToTrip(trips[0].id);
             }
+            updateHeaderTripName();
 
             // 3. 設置事件監聽器
             addMemberBtn.addEventListener('click', addMember);
@@ -2256,6 +2520,18 @@
                 const ts = getStoredRateUpdatedAt();
                 if (ts) ratesTsEl.textContent = 'Updated: ' + new Date(ts).toLocaleString('zh-TW');
             }
+
+            // 雲端同步控制元件 (Link / Cancel)
+            const codeInput = document.getElementById('trip-code-input');
+            const btnLink = document.getElementById('cloud-link');
+            const btnCancel = document.getElementById('cloud-cancel');
+            if (btnLink) btnLink.addEventListener('click', async () => {
+              const code = (codeInput && codeInput.value || '').trim();
+              await linkToTripCode(code);
+            });
+            if (btnCancel) btnCancel.addEventListener('click', () => {
+              cancelSync();
+            });
 
             // 自定義分攤事件監聽器
             customSplitBtn.addEventListener('click', toggleCustomSplitMode);
@@ -2307,7 +2583,10 @@
             renderExpenses();
             calculateAndRenderSettlement();
             updateAddExpenseButtonState();
-            
+
+            // 動態更新標題副標示目前行程名稱
+            updateHeaderTripName();
+
             console.log('初始化完成，當前狀態:', {
                 trips: trips.length,
                 currentTripId: currentTripId,
