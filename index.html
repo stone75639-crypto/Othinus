@@ -207,7 +207,7 @@
             </button>
             
             <!-- Collapsible Content Wrapper (初始狀態：max-h-0 收合) -->
-            <div id="settings-content" class="overflow-hidden transition-all duration-300 max-h-0 overflow-y-auto w-full px-2 sm:px-3">
+            <div id="settings-content" class="transition-all duration-300 max-h-0 overflow-y-auto overflow-x-visible w-full px-2 sm:px-3">
                 
                 <!-- 成員新增 -->
                 <div class="flex space-x-2 mb-4 pt-4">
@@ -394,6 +394,10 @@
           const t = trips.find(tt => tt.id === currentTripId);
           return (t && t.name) ? t.name : '未命名行程';
         }
+
+        // Persist linked trip id across reloads
+        function getSyncedId() { return localStorage.getItem('travel_synced_trip_id') || ''; }
+        function setSyncedId(v) { if (v) localStorage.setItem('travel_synced_trip_id', v); else localStorage.removeItem('travel_synced_trip_id'); }
 
         // Ensure Firestore is initialized before use
         async function ensureDbReady() {
@@ -880,6 +884,7 @@
           try {
             await hydrateLocalFromCloud(code);
             syncedTripId = code;
+            setSyncedId(code);
             setCloudStatus('已同步：' + code);
             await subscribeTrip(code);
             try { await mirrorLocalToCloud(code); } catch(e) {}
@@ -894,6 +899,7 @@
                 try {
                   await mirrorLocalToCloud(code);
                   syncedTripId = code;
+                  setSyncedId(code);
                   setCloudStatus('已同步：' + code);
                   await subscribeTrip(code);
                   showMessage('Created and linked: ' + code, 'success');
@@ -920,6 +926,7 @@
           expenses = expenses.map(e => (e.tripId === currentTripId ? { ...e, tripId: newId } : e));
           currentTripId = newId;
           syncedTripId = null;
+          setSyncedId('');
           saveAllData();
           renderTrips();
           switchToTrip(currentTripId);
@@ -2138,12 +2145,15 @@
 
             if (isSettingsOpen) {
                 // open: allow scrolling area to expand
+                settingsContentEl.classList.remove('overflow-hidden');
+                settingsContentEl.classList.add('overflow-x-visible');
                 settingsContentEl.classList.remove('max-h-0');
                 settingsContentEl.classList.add('max-h-[70vh]', 'md:max-h-[80vh]', 'pt-4', 'border-t', 'border-gray-200');
                 toggleIconEl.classList.add('rotate-180');
                 toggleIconEl.classList.remove('rotate-0');
             } else {
                 // close: collapse and remove any height classes
+                settingsContentEl.classList.remove('overflow-x-visible');
                 settingsContentEl.classList.remove('pt-4', 'border-t', 'border-gray-200', 'max-h-[70vh]', 'md:max-h-[80vh]');
                 settingsContentEl.classList.add('max-h-0');
                 toggleIconEl.classList.remove('rotate-180');
@@ -2708,6 +2718,21 @@
                 const ts = getStoredRateUpdatedAt();
                 if (ts) ratesTsEl.textContent = 'Updated: ' + new Date(ts).toLocaleString('zh-TW');
             }
+
+            // Auto-recover cloud subscription if previously linked
+            (async () => {
+              try {
+                const prev = getSyncedId();
+                if (prev) {
+                  const codeBox = document.getElementById('trip-code-input');
+                  if (codeBox) codeBox.value = prev;
+                  if (!db) db = await ensureDbReady();
+                  setCloudStatus('已同步：' + prev);
+                  await subscribeTrip(prev);
+                  try { await hydrateLocalFromCloud(prev); } catch (_) {}
+                }
+              } catch (e) { console.warn('Auto-recover sync failed:', e); }
+            })();
 
             // 雲端同步控制元件 (Link / Cancel)
             const codeInput = document.getElementById('trip-code-input');
