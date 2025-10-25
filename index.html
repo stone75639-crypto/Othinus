@@ -725,11 +725,13 @@
               category: x.category || '',
               amount: x.amount || 0,
               currency: x.currency || 'TWD',
-              rateAtCreation: x.rateAtCreation != null ? x.rateAtCreation : 1,
+              rateAtCreation: (x.rateAtCreation != null) ? x.rateAtCreation : 1,
               payer: x.payer || '',
               sharers: Array.isArray(x.sharers) ? x.sharers : [],
               customSplit: x.customSplit || null,
-              createdAt: x.createdAt || new Date().toISOString()
+              createdAt: x.createdAt || new Date().toISOString(),
+              createdByDeviceId: x.createdByDeviceId || '',
+              createdByDeviceName: x.createdByDeviceName || ''
             }));
             expenses = localExps;
             localStorage.setItem('travel_expenses', JSON.stringify(expenses));
@@ -810,7 +812,7 @@
 
           const tripRef = db.collection('trips').doc(tripId);
           const memRef  = tripRef.collection('members');
-          const expRef  = tripRef.collection('expenses');
+          const expRef  = tripRef.collection('expenses').orderBy('createdAt');
 
           const unsubs = [];
 
@@ -2221,6 +2223,15 @@
             
             // 只顯示當前行程的支出
             const currentTripExpenses = expenses.filter(exp => exp.tripId === currentTripId);
+
+            // Sort by time ascending so newest ends up at the bottom
+            function toTs(v) {
+              if (v == null) return 0;
+              if (typeof v === 'number') return v;
+              const t = Date.parse(v);
+              return isNaN(t) ? 0 : t;
+            }
+            currentTripExpenses.sort((a,b) => toTs(a.createdAt) - toTs(b.createdAt));
             
             if (currentTripExpenses.length === 0) {
                 expensesListEl.innerHTML = '<li class="text-gray-400 italic text-sm">尚無支出記錄...</li>';
@@ -2721,8 +2732,8 @@
                 }
             }
 
-            // 確保存在建立時間
-            newExpense.createdAt = newExpense.createdAt || Date.now();
+            // 確保存在建立時間 (ISO 字串，便於排序)
+            newExpense.createdAt = new Date().toISOString();
 
             // 於建立時保存匯率，避免之後刷新影響舊資料（若無則以 1 作為保險值）
             newExpense.rateAtCreation = (exchangeRates && exchangeRates[newExpense.currency] != null)
@@ -2954,28 +2965,58 @@
                 if (ts) ratesTsEl.textContent = 'Updated: ' + new Date(ts).toLocaleString('zh-TW');
             }
 
-            // Auto-recover cloud subscription if previously linked
+            // --- Auto-link: restore previous synced trip id or URL ?code=...
             (async () => {
               try {
-                const prev = getSyncedId();
-                if (prev) {
-                  const codeBox = document.getElementById('trip-code-input');
-                  if (codeBox) codeBox.value = prev;
-                  if (!db) db = await ensureDbReady();
-                  setCloudStatus('已同步：' + prev);
-                  await subscribeTrip(prev);
-                  try { await hydrateLocalFromCloud(prev); } catch (_) {}
+                const prev = getSyncedId && getSyncedId();
+                const url = new URL(window.location.href);
+                const urlCode = url.searchParams.get('code');
+                const code = (urlCode && urlCode.trim()) || (prev && prev.trim()) || '';
+
+                if (code) {
+                  if (!syncedTripId || syncedTripId !== code) {
+                    await linkToTripCode(code);
+                  } else {
+                    if (!db) db = await ensureDbReady();
+                    await subscribeTrip(code);
+                  }
+                  const input = document.getElementById('trip-code-input');
+                  if (input) input.value = code;
                 }
-              } catch (e) { console.warn('Auto-recover sync failed:', e); }
+              } catch (e) {
+                console.warn('Auto-link on load failed:', e);
+              }
             })();
 
             // 雲端同步控制元件 (Link / Cancel)
             const codeInput = document.getElementById('trip-code-input');
             const btnLink = document.getElementById('cloud-link');
             const btnCancel = document.getElementById('cloud-cancel');
+
+            // --- Auto-link on input (debounced) and on Enter ---
+            let codeDebounce = null;
+            function looksLikeTripCode(s) { return typeof s === 'string' && s.trim().length >= 16; }
+
+            if (codeInput) {
+              codeInput.addEventListener('input', () => {
+                const v = codeInput.value.trim();
+                window.clearTimeout(codeDebounce);
+                if (looksLikeTripCode(v)) {
+                  codeDebounce = setTimeout(() => { linkToTripCode(v); }, 700);
+                }
+              });
+              codeInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                  const v = codeInput.value.trim();
+                  if (looksLikeTripCode(v)) linkToTripCode(v);
+                }
+              });
+            }
+
             if (btnLink) btnLink.addEventListener('click', async () => {
-              const code = (codeInput && codeInput.value || '').trim();
-              try { btnLink.disabled = true; await linkToTripCode(code); }
+              const v = (codeInput && codeInput.value || '').trim();
+              if (!looksLikeTripCode(v)) return;
+              try { btnLink.disabled = true; await linkToTripCode(v); }
               finally { btnLink.disabled = false; }
             });
             if (btnCancel) btnCancel.addEventListener('click', () => {
