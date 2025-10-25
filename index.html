@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>進階旅遊分帳與清算器</title>
     <!-- 載入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -42,6 +42,11 @@
             background-size: 1.5em 1.5em;
             padding-right: 2.5rem;
         }
+        /* ---- Mobile consistency ---- */
+        html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+        html, body { width: 100%; overflow-x: hidden; }
+        input, select, textarea, button { font-size: 16px; }
+        .container-full { width: 100%; max-width: 100%; min-width: 0; }
     </style>
 </head>
 <body class="p-4 md:p-8">
@@ -100,13 +105,13 @@
                 </div>
                 
                 <!-- 金額與幣別 -->
-                <div class="flex space-x-3">
+                <div class="flex flex-col sm:flex-row gap-3">
                     <div class="flex-1">
                         <label class="block text-sm font-medium text-gray-700 mb-1">金額</label>
                         <input type="number" id="expense-amount" placeholder="0" min="0" step="1" inputmode="decimal"
                                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 appearance-none">
                     </div>
-                    <div class="w-24">
+                    <div class="w-full sm:w-24">
                         <label class="block text-sm font-medium text-gray-700 mb-1">幣別</label>
                         <select id="expense-currency" 
                                 class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 appearance-none cursor-pointer currency-select">
@@ -193,7 +198,7 @@
         </div>
 
         <!-- 4. 成員管理卡片 (視為設定) - 支援收合功能 -->
-        <div id="member-management-card" class="bg-white card rounded-xl p-6 shadow-lg min-w-0 break-words">
+        <div id="member-management-card" class="bg-white card rounded-xl p-6 shadow-lg min-w-0 break-words container-full">
             <!-- Clickable Header Button -->
             <button id="toggle-settings-btn" class="w-full flex justify-between items-center text-left -mt-2">
                 <h2 class="text-2xl font-bold text-gray-700 flex items-center">
@@ -210,11 +215,11 @@
             <div id="settings-content" class="transition-all duration-300 max-h-0 overflow-y-auto overflow-x-visible w-full px-2 sm:px-3">
                 
                 <!-- 成員新增 -->
-                <div class="flex space-x-2 mb-4 pt-4">
+                <div class="flex flex-col sm:flex-row flex-wrap gap-2 mb-4 pt-4">
                     <input type="text" id="member-name-input" placeholder="輸入成員名稱..."
                            class="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition-shadow shadow-sm" maxlength="15">
                     <button id="add-member-btn"
-                            class="px-5 py-3 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors shadow-md disabled:bg-gray-400">
+                            class="w-full sm:w-auto px-5 py-3 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors shadow-md disabled:bg-gray-400">
                         新增
                     </button>
                 </div>
@@ -246,11 +251,11 @@
                     </div>
 
                     <!-- 新增行程 -->
-                    <div class="flex space-x-2 mb-4">
+                    <div class="flex flex-col sm:flex-row flex-wrap gap-2 mb-4">
                         <input type="text" id="trip-name-input" placeholder="輸入行程名稱..."
                                class="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition-shadow shadow-sm" maxlength="20">
                         <button id="add-trip-btn"
-                                class="px-5 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors shadow-md disabled:bg-gray-400">
+                                class="w-full sm:w-auto px-5 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors shadow-md disabled:bg-gray-400">
                             新增
                         </button>
                     </div>
@@ -300,9 +305,9 @@
                 <div class="mt-6 border-t pt-4">
                   <h3 class="text-xl font-bold text-gray-700 mb-3">雲端同步</h3>
                   <div class="flex flex-wrap items-center gap-2 mb-2">
-                    <input id="trip-code-input" type="text" placeholder="輸入共享代碼" class="flex-1 p-2 border border-gray-300 rounded-lg text-sm" />
-                    <button id="cloud-link" class="px-3 py-1 bg-indigo-600 text-white rounded text-sm">Link</button>
-                    <button id="cloud-cancel" class="px-3 py-1 bg-gray-600 text-white rounded text-sm">Cancel Sync</button>
+                    <input id="trip-code-input" type="text" placeholder="輸入共享代碼" class="flex-1 min-w-0 w-full sm:w-auto p-2 border border-gray-300 rounded-lg text-sm" />
+                    <button id="cloud-link" class="w-full sm:w-auto px-3 py-1 bg-indigo-600 text-white rounded text-sm">Link</button>
+                    <button id="cloud-cancel" class="w-full sm:w-auto px-3 py-1 bg-gray-600 text-white rounded text-sm">Cancel Sync</button>
                   </div>
                   <p class="text-xs text-gray-500" id="cloud-status">未同步</p>
                 </div>
@@ -389,6 +394,7 @@
         let isSyncingToCloud = false; // prevents write loop
         let isUpdatingFromCloud = false; // prevents read/write race
         let unsubscribeTrip = null;   // to detach trip-level listener
+        let justHydratedFromCloud = false; // skip one mirror after a fresh hydrate
 
         function getCurrentTripName() {
           const t = trips.find(tt => tt.id === currentTripId);
@@ -699,6 +705,7 @@
             // Re-render
             renderTrips();
             switchToTrip(currentTripId);
+            justHydratedFromCloud = true;
           } catch (e) {
             console.error(e);
             showMessage('Link 失敗：' + (e.message || 'unknown'), 'error');
@@ -828,16 +835,34 @@
           unsubscribeCloud = () => { unsubs.forEach(u => { try { u(); } catch(_) {} }); };
         }
 
-        // mirror local -> cloud (overwrite members & expenses for current trip)
+        // mirror local -> cloud (safe upsert, protect against empty local wiping cloud)
         async function mirrorLocalToCloud(tripId) {
-          if (isSyncingToCloud || isUpdatingFromCloud) return; // avoid infinite loop
+          if (isSyncingToCloud || isUpdatingFromCloud) return;
           isSyncingToCloud = true;
           try {
             if (!db) db = await ensureDbReady();
             if (!tripId) return;
-            console.log('🟢 Sync → Cloud start');
-            const tripDoc = db.collection('trips').doc(tripId);
 
+            const tripDoc = db.collection('trips').doc(tripId);
+            const memRef = tripDoc.collection('members');
+            const expRef = tripDoc.collection('expenses');
+
+            // Count local data for current trip
+            const localMem = members.slice();
+            const localExp = expenses.filter(e => e.tripId === currentTripId);
+
+            // Read remote counts
+            const [remoteMemSnap, remoteExpSnap] = await Promise.all([memRef.get(), expRef.get()]);
+            const remoteMemCount = remoteMemSnap.size;
+            const remoteExpCount = remoteExpSnap.size;
+
+            // Guard: do not wipe cloud if local is empty while remote has data
+            if (localMem.length === 0 && localExp.length === 0 && (remoteMemCount > 0 || remoteExpCount > 0)) {
+              console.warn('Mirror aborted: local empty but remote has data.');
+              return;
+            }
+
+            // Upsert trip doc
             await tripDoc.set({
               name: getCurrentTripName(),
               baseCurrency: 'TWD',
@@ -845,30 +870,34 @@
               updatedAt: new Date().toISOString()
             }, { merge: true });
 
-            const memRef = tripDoc.collection('members');
-            const expRef = tripDoc.collection('expenses');
-
             const batch = db.batch();
 
-            // Delete old members
-            const oldMembers = await memRef.get();
-            oldMembers.forEach(d => batch.delete(d.ref));
-
-            // Add current members
-            members.forEach(m => batch.set(memRef.doc(m), { name: m }));
-
-            // Delete old expenses
-            const oldExps = await expRef.get();
-            oldExps.forEach(d => batch.delete(d.ref));
-
-            // Add current expenses
-            expenses.filter(e => e.tripId === currentTripId).forEach(e => {
-              const id = e.id || db.collection('_').doc().id;
-              batch.set(expRef.doc(id), e);
+            // Members: upsert locals; delete extraneous only if we have locals
+            const localMemIds = new Set(localMem.map(n => n));
+            localMem.forEach(n => {
+              batch.set(memRef.doc(n), { name: n, updatedAt: new Date().toISOString() }, { merge: true });
             });
+            if (localMem.length > 0) {
+              remoteMemSnap.forEach(d => { if (!localMemIds.has(d.id)) batch.delete(d.ref); });
+            }
+
+            // Expenses: upsert by id (create if missing); delete extras only if we have locals
+            localExp.forEach(e => {
+              const id = e.id || db.collection('_').doc().id;
+              const ref = expRef.doc(id);
+              const payload = Object.assign({}, e, { id, updatedAt: new Date().toISOString() });
+              batch.set(ref, payload, { merge: true });
+            });
+            if (localExp.length > 0) {
+              remoteExpSnap.forEach(d => {
+                const id = d.id;
+                const existsLocally = localExp.some(le => (le.id || '') === id);
+                if (!existsLocally) batch.delete(d.ref);
+              });
+            }
 
             await batch.commit();
-            console.log('✅ Sync → Cloud complete');
+            console.log('✅ Safe mirror complete');
           } catch (e) {
             console.error('❌ mirrorLocalToCloud failed:', e);
           } finally {
@@ -887,7 +916,7 @@
             setSyncedId(code);
             setCloudStatus('已同步：' + code);
             await subscribeTrip(code);
-            try { await mirrorLocalToCloud(code); } catch(e) {}
+            // Do NOT mirror immediately after a cloud hydrate to avoid overwriting cloud with local empty.
             showMessage('Linked to cloud trip: ' + code, 'success');
           } catch (e) {
             const msg = '找不到代碼 ' + code + ' 的雲端行程。要用你目前的本機資料來建立嗎？';
@@ -976,8 +1005,13 @@
             }
             // auto-mirror to cloud when linked
             if (syncedTripId && db && !isUpdatingFromCloud) {
-              // fire-and-forget; do not block UI
-              mirrorLocalToCloud(syncedTripId).catch((e) => console.warn('mirror failed:', e));
+              if (justHydratedFromCloud) {
+                console.log('skip one mirror after hydrate to protect cloud data');
+                justHydratedFromCloud = false;
+              } else {
+                // fire-and-forget; do not block UI
+                mirrorLocalToCloud(syncedTripId).catch((e) => console.warn('mirror failed:', e));
+              }
             }
         }
 
@@ -2624,6 +2658,8 @@
                 : 1;
 
             expenses.push(newExpense);
+            // Ensure subsequent save mirrors to cloud (do not skip due to a recent hydrate)
+            justHydratedFromCloud = false;
             /* reset custom split state after a successful add */
             isCustomSplitMode = false;
             customSplitSection.classList.add('hidden');
