@@ -818,7 +818,8 @@
           unsubs.push(
             tripRef.onSnapshot(doc => {
               if (!doc.exists) return;
-              if (isSyncingToCloud) return;
+              // Ignore only local pending writes; accept remote updates
+              if (doc.metadata && doc.metadata.hasPendingWrites) return;
               isUpdatingFromCloud = true;
               const data = doc.data() || {};
               const idx = trips.findIndex(t => t.id === currentTripId);
@@ -840,7 +841,7 @@
           // Members subcollection
           unsubs.push(
             memRef.onSnapshot(snap => {
-              if (isSyncingToCloud) return;
+              if (snap.metadata && snap.metadata.hasPendingWrites) return;
               isUpdatingFromCloud = true;
               members = snap.docs.map(d => {
                 const v = d.data();
@@ -857,10 +858,11 @@
           // Expenses subcollection
           unsubs.push(
             expRef.onSnapshot(snap => {
-              if (isSyncingToCloud) return;
+              if (snap.metadata && snap.metadata.hasPendingWrites) return;
               console.log('[Cloud] expenses snapshot size:', snap.size, 'trip:', tripId);
+              console.log('[Cloud] first doc ids sample:', snap.docs.slice(0,3).map(d => d.id));
               isUpdatingFromCloud = true;
-              const list = snap.docs.map(d => ({ id: d.id, tripId, ...(d.data() || {}) }));
+              const list = snap.docs.map(d => ({ id: d.id, ...(d.data() || {}), tripId }));
               expenses = list;
               localStorage.setItem('travel_expenses', JSON.stringify(expenses));
               renderExpenses();
