@@ -997,59 +997,110 @@
         
 
         async function exportTripToExcel() {
-            if (!currentTripId) {
-                showMessage('Please select a trip first.', 'warning');
-                return;
-            }
-            const trip = trips.find(t => t.id === currentTripId);
-            if (!trip) {
-                showMessage('Current trip not found.', 'error');
-                return;
-            }
-            const tripExpenses = expenses.filter(exp => exp.tripId === currentTripId);
-            if (tripExpenses.length === 0) {
-                showMessage('No expenses in this trip.', 'warning');
-                return;
-            }
-            const workbook = new ExcelJS.Workbook();
-            const sheet = workbook.addWorksheet(trip.name || 'Trip');
-            // header
-            sheet.addRow(['Description', 'Category', 'Amount', 'Currency', 'Payer', 'Sharers', 'CustomSplit', 'CreatedAt']);
-            const header = sheet.getRow(1);
-            header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-            header.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } };
-            // rows
-            tripExpenses.forEach(exp => {
-                const sharersText = Array.isArray(exp.sharers) ? exp.sharers.join(', ') : '';
-                const customSplitText = exp.customSplit
-                    ? Object.entries(exp.customSplit).map(([name, val]) => name + ': ' + (exp.currency || '') + ' ' + val).join('; ')
-                    : '';
-                sheet.addRow([
-                    exp.description || '',
-                    exp.category || '',
-                    exp.amount != null ? exp.amount : '',
-                    exp.currency || '',
-                    exp.payer || '',
-                    sharersText,
-                    customSplitText,
-                    exp.createdAt ? new Date(exp.createdAt).toISOString() : ''
-                ]);
+          if (!currentTripId) { showMessage('Please select a trip first.', 'warning'); return; }
+          const trip = trips.find(t => t.id === currentTripId);
+          if (!trip) { showMessage('Current trip not found.', 'error'); return; }
+
+          const tripExpenses = expenses.filter(exp => exp.tripId === currentTripId);
+          if (tripExpenses.length === 0) { showMessage('No expenses in this trip.', 'warning'); return; }
+
+          // 1) Prepare workbook
+          const workbook = new ExcelJS.Workbook();
+
+          // ========= Sheet 1: Expenses (keep existing behavior) =========
+          const sheet = workbook.addWorksheet('Expenses');
+          sheet.addRow(['Description', 'Category', 'Amount', 'Currency', 'Payer', 'Sharers', 'CustomSplit', 'CreatedAt', 'TWD (approx)']);
+          const header = sheet.getRow(1);
+          header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+          header.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } };
+
+          tripExpenses.forEach(exp => {
+            const sharersText = Array.isArray(exp.sharers) ? exp.sharers.join(', ') : '';
+            const customSplitText = exp.customSplit
+              ? Object.entries(exp.customSplit).map(([name, val]) => name + ': ' + (exp.currency || '') + ' ' + val).join('; ')
+              : '';
+            const twd = convertExpenseToTWD(exp);
+            sheet.addRow([
+              exp.description || '',
+              exp.category || '',
+              exp.amount != null ? exp.amount : '',
+              exp.currency || '',
+              exp.payer || '',
+              sharersText,
+              customSplitText,
+              exp.createdAt ? new Date(exp.createdAt).toISOString() : '',
+              Math.round(twd)
+            ]);
+          });
+          sheet.columns.forEach(col => { col.width = 20; });
+
+          // ========= Sheet 2: Summary (NEW) =========
+          const sumSheet = workbook.addWorksheet('Summary');
+          const title = (trip.name || 'Trip') + ' - Summary';
+          sumSheet.addRow([title]).font = { bold: true, size: 14 };
+          sumSheet.mergeCells(1, 1, 1, 4);
+
+          // 2) Trip total in TWD
+          let tripTotalTWD = 0;
+          tripExpenses.forEach(e => { tripTotalTWD += convertExpenseToTWD(e); });
+          sumSheet.addRow([]);
+          sumSheet.addRow(['Trip Total (TWD)', Math.round(tripTotalTWD)]);
+          sumSheet.getRow(sumSheet.lastRow.number).font = { bold: true };
+
+          // 3) Per-member table: Paid / Should (Spent) / Net
+          const balances = calculateBalances(); // uses currentTripId + globals
+          sumSheet.addRow([]);
+          sumSheet.addRow(['Member', 'Actual Paid (TWD)', 'Theoretical Spend (TWD)', 'Net (TWD)', 'Status']).font = { bold: true };
+
+          Array.from(balances.entries()).forEach(([member, data]) => {
+            const paid = Math.round(data.paid || 0);
+            const spent = Math.round(data.spent || 0);
+            const net = Math.round((data.net || 0));
+            let status = 'Balanced';
+            if (net > 0) status = 'Receivable ' + net;
+            if (net < 0) status = 'Payable ' + Math.abs(net);
+            sumSheet.addRow([member, paid, spent, net, status]);
+          });
+
+          // 4) Settlement path: who pays whom
+          const settlements = simplifyDebts(balances);
+          sumSheet.addRow([]);
+          sumSheet.addRow(['Settlement Path']).font = { bold: true };
+          if (settlements.length === 0) {
+            sumSheet.addRow(['No settlement needed (within tolerance).']);
+          } else {
+            sumSheet.addRow(['From', 'To', 'Amount (TWD)']).font = { bold: true };
+            settlements.forEach(s => {
+              sumSheet.addRow([s.from, s.to, Math.round(s.amount)]);
             });
-            // width
-            sheet.columns.forEach(col => { col.width = 20; });
-            // download
-            const buffer = await workbook.xlsx.writeBuffer();
-            const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-            a.href = url;
-            a.download = (trip.name || 'trip') + '-' + stamp + '.xlsx';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            showMessage('Excel exported.', 'success');
+          }
+
+          // 5) Optional: snapshot of exchange rates used (base TWD)
+          sumSheet.addRow([]);
+          sumSheet.addRow(['Exchange Rates (Base TWD)']).font = { bold: true };
+          sumSheet.addRow(['Currency', 'Rate']);
+          Object.entries(exchangeRates || { TWD:1 }).forEach(([code, rate]) => {
+            sumSheet.addRow([code, rate]);
+          });
+
+          // column widths
+          sumSheet.columns.forEach((col, idx) => {
+            col.width = idx === 0 ? 24 : 18;
+          });
+
+          // 6) Download
+          const buffer = await workbook.xlsx.writeBuffer();
+          const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          a.href = url;
+          a.download = (trip.name || 'trip') + '-' + stamp + '.xlsx';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          showMessage('Excel exported with summary.', 'success');
         }
 
         function markTripEdited(tripId) {
