@@ -774,19 +774,24 @@
             snap.expenses.forEach(e => {
               const id = e.id || db.collection('_').doc().id;
               const ref = expRef.doc(id);
-              batch2.set(ref, {
-                description: e.description,
-                category: e.category,
-                amount: e.amount,
-                currency: e.currency,
+              const payload = {
+                id,
+                tripId,
+                description: e.description || '',
+                category: e.category || '',
+                amount: e.amount || 0,
+                currency: e.currency || 'TWD',
                 rateAtCreation: e.rateAtCreation != null ? e.rateAtCreation : 1,
-                payer: e.payer,
-                sharers: e.sharers || [],
+                payer: e.payer || '',
+                sharers: Array.isArray(e.sharers) ? e.sharers : [],
                 customSplit: e.customSplit || null,
                 createdAt: e.createdAt || new Date().toISOString(),
+                createdByDeviceId: e.createdByDeviceId || '',
+                createdByDeviceName: e.createdByDeviceName || '',
                 updatedAt: new Date().toISOString(),
-                updatedBy: 'web'
-              });
+                updatedBy: (DEVICE && DEVICE.name) ? DEVICE.name : 'web'
+              };
+              batch2.set(ref, payload, { merge: true });
             });
             await batch2.commit();
           } catch (e) {
@@ -915,14 +920,28 @@
             }
 
             // Expenses: upsert by id (create if missing); delete extras only if we have locals
-            // Build a set of remote ids to avoid re-creating with new ids
             const remoteIds = new Set(remoteExpSnap.docs.map(d => d.id));
             localExp.forEach(e => {
-              const chosenId = (e.id && typeof e.id === 'string')
-                ? e.id
-                : (remoteIds.has(e.id) ? e.id : db.collection('_').doc().id);
+              const chosenId = (e.id && typeof e.id === 'string') ? e.id : db.collection('_').doc().id;
               const ref = expRef.doc(chosenId);
-              const payload = Object.assign({}, e, { id: chosenId, updatedAt: new Date().toISOString() });
+              const payload = {
+                id: chosenId,
+                tripId: tripId,
+                description: e.description || '',
+                category: e.category || '',
+                amount: e.amount || 0,
+                currency: e.currency || 'TWD',
+                rateAtCreation: (e.rateAtCreation != null) ? e.rateAtCreation : 1,
+                payer: e.payer || '',
+                sharers: Array.isArray(e.sharers) ? e.sharers : [],
+                customSplit: e.customSplit || null,
+                createdAt: e.createdAt || new Date().toISOString(),
+                createdByDeviceId: e.createdByDeviceId || '',
+                createdByDeviceName: e.createdByDeviceName || '',
+                updatedAt: new Date().toISOString(),
+                updatedBy: (DEVICE && DEVICE.name) ? DEVICE.name : 'web'
+              };
+              // Upsert (merge) to avoid wiping unknown fields from other writers
               batch.set(ref, payload, { merge: true });
             });
             if (localExp.length > 0) {
@@ -2708,24 +2727,39 @@
                 ? exchangeRates[newExpense.currency]
                 : 1;
 
-            // If cloud-linked, write-through to Firestore first, get a stable id
+            // If cloud-linked, write-through to Firestore first, and DO NOT push locally (avoid duplicate)
             if (syncedTripId && db) {
               try {
                 const expRef = db.collection('trips').doc(syncedTripId).collection('expenses');
                 const newId = db.collection('_').doc().id; // pre-generate id
-                newExpense.id = newId; // attach the id locally now
+                newExpense.id = newId;
                 const payload = Object.assign({}, newExpense, {
                   updatedAt: new Date().toISOString(),
-                  updatedBy: 'web'
+                  updatedBy: (DEVICE && DEVICE.name) ? DEVICE.name : 'web'
                 });
                 await expRef.doc(newId).set(payload, { merge: true });
-                // After successful cloud write, proceed to push to local
+
+                // Clear UI and exit — let onSnapshot render it back, preventing duplicates
+                isCustomSplitMode = false;
+                if (typeof customSplitSection !== 'undefined' && customSplitSection) customSplitSection.classList.add('hidden');
+                if (typeof customSplitInputs !== 'undefined' && customSplitInputs) customSplitInputs.innerHTML = '';
+                if (typeof customSplitAmounts !== 'undefined') customSplitAmounts = {};
+                markTripEdited(currentTripId);
+                if (typeof expenseDescriptionInput !== 'undefined' && expenseDescriptionInput) expenseDescriptionInput.value = '';
+                if (typeof expenseAmountInput !== 'undefined' && expenseAmountInput) expenseAmountInput.value = '';
+                if (Array.isArray(members)) currentSharers = [...members];
+                if (typeof renderPayerChips === 'function') renderPayerChips();
+                if (typeof renderShareChips === 'function') renderShareChips();
+                if (typeof updateAddExpenseButtonState === 'function') updateAddExpenseButtonState();
+                showMessage('成功新增支出！（已雲端寫入，稍後自動顯示）', 'success');
+                return; // IMPORTANT: stop here to avoid local push
               } catch (e) {
                 console.error('Cloud write-through failed, fallback to local only:', e);
-                // If failed, keep local flow; mirrorLocalToCloud will try later
+                // If cloud write fails, fall back to local push below
               }
             }
 
+            // Local-only path (when not cloud-linked OR cloud write failed)
             expenses.push(newExpense);
             // Ensure subsequent save mirrors to cloud (do not skip due to a recent hydrate)
             justHydratedFromCloud = false;
