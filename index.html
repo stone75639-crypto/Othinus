@@ -1,0 +1,2749 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>進階旅遊分帳與清算器</title>
+    <!-- 載入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDK (v9 compat via CDN) -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/exceljs/dist/exceljs.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* 設定 Inter 字體 */
+        body { font-family: 'Inter', sans-serif; background-color: #f7f9fc; }
+        .card { box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.06); }
+        .appearance-none { -webkit-appearance: none; -moz-appearance: none; appearance: none; }
+        
+        /* Chip 樣式 */
+        .chip-base { 
+            padding: 8px 16px; border-radius: 9999px; cursor: pointer; transition: all 0.15s ease-in-out; 
+            font-weight: 500; font-size: 0.875rem; border: 2px solid; user-select: none; white-space: nowrap;
+        }
+        .chip-inactive { background-color: #e5e7eb; color: #4b5563; border-color: #d1d5db; }
+        .chip-active { background-color: #4f46e5; color: #ffffff; border-color: #4f46e5; }
+        .chip-category-active { background-color: #059669; color: #ffffff; border-color: #059669; }
+        .chip-category-inactive { background-color: #d1fae5; color: #065f46; border-color: #a7f3d0; }
+        
+        /* 隱藏數字輸入框的箭頭 */
+        input[type='number']::-webkit-inner-spin-button,
+        input[type='number']::-webkit-outer-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
+        }
+
+        /* 幣別下拉選單樣式 */
+        .currency-select {
+            background-image: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none'%3e%3cpath d='M7 7l3 3 3-3' stroke='%234B5563' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3e%3c/svg%3e");
+            background-position: right 0.75rem center;
+            background-repeat: no-repeat;
+            background-size: 1.5em 1.5em;
+            padding-right: 2.5rem;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-4xl mx-auto space-y-8">
+
+        <header class="text-center pb-4">
+            <h1 class="text-4xl font-extrabold text-gray-800">💰 記帳工具</h1>
+            <p class="text-gray-500 mt-2" id="current-trip-display">行程載入中...</p>
+        </header>
+        
+        <!-- 訊息彈窗 (用來取代 alert) -->
+        <div id="message-box" class="fixed inset-x-0 top-0 z-50 p-4 hidden">
+            <div id="message-content" class="max-w-sm mx-auto bg-yellow-500 text-white p-3 rounded-lg shadow-xl text-center font-medium">
+                <!-- 訊息內容 -->
+            </div>
+        </div>
+
+        <!-- 確認對話框 -->
+        <div id="confirm-dialog" class="fixed inset-0 z-[100] hidden bg-black bg-opacity-50 flex items-center justify-center p-4">
+            <div class="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 pointer-events-auto">
+                <h3 id="confirm-title" class="text-xl font-bold text-gray-800 mb-4">刪除成員確認</h3>
+                <p id="confirm-message" class="text-gray-600 mb-6">您確定要執行此操作嗎？</p>
+                <div class="space-y-3">
+                    <button type="button" id="confirm-keep-expenses" class="w-full py-3 px-4 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium">
+                        保留記錄
+                    </button>
+                    <button type="button" id="confirm-delete-expenses" class="w-full py-3 px-4 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium">
+                        刪除記錄
+                    </button>
+                    <button type="button" id="confirm-cancel" class="w-full py-2 px-4 bg-gray-300 text-gray-700 rounded-lg hover:bg-gray-400 transition-colors">
+                        取消
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 1. 記錄支出卡片 -->
+        <div id="expense-input-card" class="bg-white card rounded-xl p-6 shadow-lg">
+            <h2 class="text-2xl font-bold text-gray-700 mb-4">記錄支出</h2>
+            
+            <div class="space-y-4">
+                <!-- 支出項目 -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">項目描述</label>
+                    <input type="text" id="expense-description" placeholder="例如：晚餐、計程車費"
+                           class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500">
+                </div>
+
+                <!-- 類別選擇 -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">支出類別</label>
+                    <div id="category-chips" class="flex flex-wrap gap-2">
+                        <!-- Categories will be rendered here -->
+                    </div>
+                </div>
+                
+                <!-- 金額與幣別 -->
+                <div class="flex space-x-3">
+                    <div class="flex-1">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">金額</label>
+                        <input type="number" id="expense-amount" placeholder="0" min="0" step="1"
+                               class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 appearance-none">
+                    </div>
+                    <div class="w-24">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">幣別</label>
+                        <select id="expense-currency" 
+                                class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 appearance-none cursor-pointer currency-select">
+                            <option value="TWD">TWD</option>
+                            <option value="USD">USD</option>
+                            <option value="JPY">JPY</option>
+                            <option value="KRW">KRW</option>
+                            <option value="EUR">EUR</option>
+                        </select>
+                    </div>
+                </div>
+                
+                <!-- 付款人 -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">誰付的錢？</label>
+                    <div id="payer-chips" class="flex flex-wrap gap-2">
+                        <p class="text-gray-400 text-sm italic p-2">請先新增成員</p>
+                    </div>
+                </div>
+
+                <!-- 分攤人 -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">誰參與分攤？</label>
+                    <div id="share-chips" class="flex flex-wrap gap-2">
+                        <p class="text-gray-400 text-sm italic p-2">請先新增成員</p>
+                    </div>
+                    <div class="flex items-center space-x-4 mt-2">
+                        <button id="select-all-sharers" class="text-indigo-600 text-sm hover:text-indigo-800 transition-colors">全選 / 取消全選</button>
+                        <button id="custom-split-btn" class="text-blue-600 text-sm hover:text-blue-800 transition-colors hidden">自定義分攤金額</button>
+                    </div>
+                    
+                    <!-- 自定義分攤金額區域 -->
+                    <div id="custom-split-section" class="mt-4 p-4 bg-blue-50 rounded-lg border border-blue-200 hidden">
+                        <h4 class="text-sm font-medium text-blue-800 mb-3">自定義分攤金額</h4>
+                        <div id="custom-split-inputs" class="space-y-2">
+                            <!-- 自定義分攤輸入會被 JavaScript 填充 -->
+                        </div>
+                        <div class="mt-3 flex items-center justify-between">
+                            <span id="split-total" class="text-sm font-medium text-blue-700">總計: 0</span>
+                            <button id="apply-custom-split" class="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 transition-colors hidden">
+                                套用分攤
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <button id="add-expense-btn"
+                    class="mt-6 w-full py-3 bg-indigo-600 text-white font-semibold rounded-lg hover:bg-indigo-700 transition-colors shadow-md disabled:bg-gray-400">
+                新增支出
+            </button>
+        </div>
+
+
+        <!-- 2. 結算總覽卡片 -->
+        <div id="settlement-overview-card" class="bg-indigo-700 card rounded-xl p-6 shadow-xl text-white">
+            <h2 class="text-2xl font-bold mb-4 text-indigo-100">💰 結算總覽</h2>
+            <div class="flex flex-wrap gap-3 mb-4">
+                <span class="inline-flex items-center px-3 py-1 rounded-full bg-indigo-600 text-sm">
+                  <span id="trip-total-label">行程總花費 (TWD):</span>
+                  <strong class="ml-2" id="trip-total-twd">0</strong>
+                </span>
+            </div>
+            <div id="should-spend-badges" class="flex flex-wrap gap-2 mb-4"></div>
+            
+            <div class="grid grid-cols-4 text-sm font-medium mb-2 pb-2 border-b border-indigo-400/50">
+                <span>成員</span>
+                <span class="text-center">實際支出 (TWD)</span>
+                <span class="text-center">理論支出 (TWD)</span>
+                <span class="text-center">淨額 (TWD)</span>
+            </div>
+
+            <div id="settlement-list" class="space-y-2 max-h-48 overflow-y-auto pr-1">
+                <p class="text-indigo-300 text-sm text-center">請新增成員與支出來計算</p>
+            </div>
+        </div>
+        
+        <!-- 3. 最佳清算路徑卡片 -->
+        <div id="settlement-path-card" class="bg-gray-800 card rounded-xl p-6 shadow-xl text-white">
+            <h2 class="text-2xl font-bold mb-4 text-yellow-400">⚡ 最佳清算路徑</h2>
+            <div id="settlement-path" class="space-y-3">
+                <p class="text-gray-400 text-sm text-center">清算路徑會在這裡顯示</p>
+            </div>
+        </div>
+
+        <!-- 4. 成員管理卡片 (視為設定) - 支援收合功能 -->
+        <div id="member-management-card" class="bg-white card rounded-xl p-6 shadow-lg">
+            <!-- Clickable Header Button -->
+            <button id="toggle-settings-btn" class="w-full flex justify-between items-center text-left -mt-2">
+                <h2 class="text-2xl font-bold text-gray-700 flex items-center">
+                    成員管理與設定
+                    <span class="ml-3 text-sm font-medium text-indigo-600 bg-indigo-100 px-3 py-1 rounded-full" id="member-count">0 人</span>
+                </h2>
+                <!-- Arrow Icon (初始狀態：收合，箭頭朝下/右) -->
+                <svg id="toggle-icon" class="w-6 h-6 text-gray-500 transition-transform duration-300 transform rotate-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                </svg>
+            </button>
+            
+            <!-- Collapsible Content Wrapper (初始狀態：max-h-0 收合) -->
+            <div id="settings-content" class="overflow-hidden transition-all duration-300 max-h-0 overflow-y-auto">
+                
+                <!-- 成員新增 -->
+                <div class="flex space-x-2 mb-4 pt-4">
+                    <input type="text" id="member-name-input" placeholder="輸入成員名稱..."
+                           class="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition-shadow shadow-sm" maxlength="15">
+                    <button id="add-member-btn"
+                            class="px-5 py-3 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors shadow-md disabled:bg-gray-400">
+                        新增
+                    </button>
+                </div>
+                <div id="member-list" class="flex flex-wrap gap-2 min-h-[3rem] p-2 border border-dashed border-gray-200 rounded-lg mb-6">
+                    <!-- 成員晶片會被 JavaScript 填充 -->
+                    <p class="text-gray-400 text-sm italic">請新增成員...</p>
+                </div>
+                
+                <!-- 行程管理 -->
+                <div class="mt-6 border-t pt-4">
+                    <h3 class="text-xl font-bold text-gray-700 mb-3">行程管理</h3>
+                    
+                    <!-- 當前行程顯示 -->
+                    <div class="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <p class="text-sm font-medium text-blue-800">當前行程</p>
+                                <p class="text-lg font-bold text-blue-900" id="current-trip-name">預設行程</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-xs text-blue-600" id="current-trip-stats">0 筆支出</p>
+                            </div>
+                        </div>
+                        <!-- 歷史行程下拉選單 -->
+                        <div class="mt-3">
+                            <label for="trip-select" class="text-xs text-blue-700 mr-2">選擇歷史行程</label>
+                            <select id="trip-select" class="mt-1 w-full md:w-auto p-2 border border-blue-200 rounded-md focus:ring-blue-500 focus:border-blue-500"></select>
+                        </div>
+                    </div>
+
+                    <!-- 新增行程 -->
+                    <div class="flex space-x-2 mb-4">
+                        <input type="text" id="trip-name-input" placeholder="輸入行程名稱..."
+                               class="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 transition-shadow shadow-sm" maxlength="20">
+                        <button id="add-trip-btn"
+                                class="px-5 py-3 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 transition-colors shadow-md disabled:bg-gray-400">
+                            新增
+                        </button>
+                    </div>
+
+                    <!-- 行程列表 -->
+                    <div id="trip-list" class="space-y-2 max-h-32 overflow-y-auto pr-1">
+                        <!-- 行程列表會被 JavaScript 填充 -->
+                    </div>
+                </div>
+
+                <!-- 資料匯入／匯出 -->
+                <div class="mt-6 border-t pt-4">
+                    <h3 class="text-xl font-bold text-gray-700 mb-3">資料備份與轉移</h3>
+                    
+                    <div class="mt-3">
+                        <button id="export-excel-btn" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors">
+                            Export current trip (Excel)
+                        </button>
+                        <p class="text-xs text-gray-500 mt-1">Export all expenses of the current trip to .xlsx</p>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2">
+                        提醒：LocalStorage 只儲存在「這台裝置／這個瀏覽器／這個網址來源」。若要跨裝置使用，請在此匯出 JSON，再到另一台裝置匯入。
+                    </p>
+                </div>
+
+                <!-- 匯率設定 -->
+                <div class="mt-6 border-t pt-4">
+                    <h3 class="text-xl font-bold text-gray-700 mb-3">匯率設定 (基準幣別: TWD)</h3>
+                    
+                    <p class="text-gray-500 text-xs mb-3">請手動輸入您所需的參考匯率，基準幣別為 TWD。</p>
+
+                    <div class="mb-2 flex items-center gap-2">
+                        <button id="refresh-rates-btn" class="px-3 py-1 bg-gray-700 text-white rounded">Refresh rates</button>
+                        <span id="rates-updated-at" class="text-xs text-gray-500"></span>
+                    </div>
+                    <div class="mb-2 flex items-center gap-2">
+                        <input type="text" id="new-currency-input" placeholder="Add currency (e.g. SGD)" maxlength="5" class="flex-1 p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm">
+                        <button id="add-currency-btn" class="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700">Add</button>
+                    </div>
+
+                    <!-- 匯率輸入區 -->
+                    <div id="exchange-rate-inputs" class="space-y-3 text-sm">
+                        <!-- 匯率輸入會被 JavaScript 填充 -->
+                    </div>
+                    <p class="text-xs text-gray-400 mt-2" id="rate-last-updated"></p>
+                </div>
+                <div class="mt-6 border-t pt-4">
+                  <h3 class="text-xl font-bold text-gray-700 mb-3">雲端同步</h3>
+                  <div class="flex flex-wrap items-center gap-2 mb-2">
+                    <input id="trip-code-input" type="text" placeholder="輸入共享代碼" class="flex-1 p-2 border border-gray-300 rounded-lg text-sm" />
+                    <button id="cloud-link" class="px-3 py-1 bg-indigo-600 text-white rounded text-sm">Link</button>
+                    <button id="cloud-cancel" class="px-3 py-1 bg-gray-600 text-white rounded text-sm">Cancel Sync</button>
+                  </div>
+                  <p class="text-xs text-gray-500" id="cloud-status">未同步</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 5. 支出列表卡片 (視為紀錄瀏覽) -->
+        <div id="expenses-list-card" class="bg-white card rounded-xl p-6 shadow-lg">
+            <h2 class="text-2xl font-bold text-gray-700 mb-4">所有支出 (紀錄瀏覽)</h2>
+            <ul id="expenses-list" class="space-y-3 max-h-96 overflow-y-auto pr-1">
+                <li class="text-gray-400 italic text-sm">尚無支出記錄...</li>
+            </ul>
+        </div>
+
+
+    </div>
+
+    <script>
+        // Firebase init (guarded)
+        const firebaseConfig = {
+        apiKey: "AIzaSyAUHmk0lHiUhLMGPy-0c9EWMgVbItYQo6U",
+        authDomain: "billshare-c97ba.firebaseapp.com",
+        projectId: "billshare-c97ba",
+        storageBucket: "billshare-c97ba.firebasestorage.app",
+        messagingSenderId: "1097608833511",
+        appId: "1:1097608833511:web:d7138a264676993fc5f542"
+        };
+
+        // Initial cloud status on page load
+        (function(){
+          const st = document.getElementById('cloud-status');
+          if (st) st.textContent = '未同步（待連線）';
+        })();
+
+        let db = null;
+        try {
+          if (!firebaseConfig.apiKey || firebaseConfig.apiKey === "YOUR_API_KEY" ||
+              !firebaseConfig.projectId || firebaseConfig.projectId === "YOUR_PROJECT_ID") {
+            console.warn("Firebase config is not set. Cloud features will be disabled.");
+          } else {
+            if (window.firebase && !firebase.apps.length) {
+              firebase.initializeApp(firebaseConfig);
+            }
+            db = window.firebase ? firebase.firestore() : null;
+            if (db && db.enablePersistence) { try { db.enablePersistence(); } catch(e) {} }
+          }
+        } catch (e) {
+          console.error("Firebase init failed:", e);
+          db = null;
+        }
+
+        // Surface status if db not ready
+        (function(){
+          if (!db) {
+            const st = document.getElementById('cloud-status');
+            if (st) st.textContent = '未同步（尚未設定 Firebase）';
+          }
+        })();
+
+        // --- 核心資料結構 ---
+        let trips = []; // 行程列表
+        let lastEditedTripId = null;   // 新增：最後編輯的行程 ID
+        let currentTripId = null; // 當前選中的行程 ID
+        let members = [];
+        let expenses = [];
+        let currentPayer = null;
+        let currentSharers = [];
+        let currentCategory = '食'; // 預設類別
+
+        // Make header subtitle reflect current trip name (global, used by multiple functions)
+        function updateHeaderTripName() {
+          const tripDisplayEl = document.getElementById('current-trip-display');
+          if (!tripDisplayEl) return;
+          const t = trips.find(x => x.id === currentTripId);
+          tripDisplayEl.textContent = t ? t.name : '尚未選擇行程';
+        }
+
+        // Cloud sync state
+        let syncedTripId = null;
+        function setCloudStatus(text) {
+          const el = document.getElementById('cloud-status');
+          if (el) el.textContent = text;
+        }
+        let isSyncingToCloud = false; // prevents write loop
+        let isUpdatingFromCloud = false; // prevents read/write race
+        let unsubscribeTrip = null;   // to detach trip-level listener
+
+        function getCurrentTripName() {
+          const t = trips.find(tt => tt.id === currentTripId);
+          return (t && t.name) ? t.name : '未命名行程';
+        }
+
+        // Ensure Firestore is initialized before use
+        async function ensureDbReady() {
+          if (window.db) return window.db;
+          if (window.firebase && firebase.firestore) {
+            if (!firebase.apps.length) {
+              firebase.initializeApp(firebaseConfig);
+            }
+            window.db = firebase.firestore();
+            try { if (window.db.enablePersistence) await window.db.enablePersistence(); } catch (e) {}
+            const st = document.getElementById('cloud-status');
+            if (st) st.textContent = '未同步（可用）';
+            return window.db;
+          }
+          throw new Error('Firebase SDK present but Firestore not available');
+        }
+
+        // 匯率資料結構 (可變動)
+        let defaultExchangeRates = {
+            'TWD': 1,
+            'USD': 30.5,
+            'JPY': 0.21,
+            'KRW': 0.024,
+            'EUR': 34.0,
+            'CNY': 4.5,
+        };
+        let exchangeRates = { ...defaultExchangeRates };
+        const categories = ['食', '衣', '住', '行', '購', '娛', '其他'];
+        let rateLastUpdated = '未曾手動更新';
+
+        // --- DOM 元素變數宣告 ---
+        let memberNameInput, addMemberBtn, memberListEl, memberCountEl;
+        let expenseDescriptionInput, expenseAmountInput, expenseCurrencySelect, categoryChipsEl;
+        let payerChipsEl, shareChipsEl, selectAllSharersBtn, addExpenseBtn;
+        let expensesListEl, settlementListEl, settlementPathEl;
+        let exchangeRateInputsEl, rateLastUpdatedEl; // 移除了 fetchRatesBtn
+        let messageBoxEl, messageContentEl; // 訊息提示
+        
+        // 新增設定區塊收合相關變數
+        let settingsContentEl, toggleSettingsBtn, toggleIconEl;
+        let isSettingsOpen = true; // 初始狀態: 收合
+
+        // 確認對話框相關變數
+        let confirmDialogEl, confirmTitleEl, confirmMessageEl, confirmCancelBtn, confirmKeepExpensesBtn, confirmDeleteExpensesBtn;
+        let pendingMemberName = null; // 儲存待刪除的成員名稱
+        let confirmKeepHandler = null; // 通用確認-保留 處理器
+        let confirmDeleteHandler = null; // 通用確認-刪除 處理器
+
+        // 行程管理相關變數
+        let tripNameInput, addTripBtn, tripListEl, currentTripNameEl, currentTripStatsEl, tripSelectEl;
+
+
+        // 自定義分攤相關變數
+        let customSplitBtn, customSplitSection, customSplitInputs, splitTotalEl, applyCustomSplitBtn;
+        let customSplitAmounts = {}; // 儲存自定義分攤金額
+        let isCustomSplitMode = false; // 是否為自定義分攤模式
+
+        // --- Local Storage 邏輯 ---
+
+        /**
+         * 讀取所有資料 (行程, 成員, 支出, 匯率)
+         */
+        function loadAllData() {
+            try {
+                console.log('開始載入資料...');
+                // 從 Local Storage 讀取儲存的資料
+                const storedTrips = localStorage.getItem('travel_trips');
+                const storedCurrentTripId = localStorage.getItem('travel_current_trip_id');
+                const storedMembers = localStorage.getItem('travel_members');
+                const storedExpenses = localStorage.getItem('travel_expenses');
+                const storedRates = localStorage.getItem('travel_rates');
+                const storedLastUpdated = localStorage.getItem('travel_rate_update');
+                const storedLastEditedTripId = localStorage.getItem('travel_last_edited_trip_id'); // 新增
+
+                console.log('LocalStorage 資料:', {
+                    trips: storedTrips ? JSON.parse(storedTrips) : null,
+                    currentTripId: storedCurrentTripId,
+                    members: storedMembers ? JSON.parse(storedMembers) : null,
+                    expenses: storedExpenses ? JSON.parse(storedExpenses) : null,
+                    lastEditedTripId: storedLastEditedTripId
+                });
+
+                // 載入行程資料
+                if (storedTrips) {
+                    trips = JSON.parse(storedTrips);
+                    console.log('載入行程資料:', trips);
+                } else {
+                    // 如果沒有行程資料，創建空陣列
+                    trips = [];
+                    console.log('沒有行程資料，創建空陣列');
+                }
+
+                // 依優先順序決定當前行程：最後編輯 > 既存 current > 依時間最新 > 否則 null
+                if (storedLastEditedTripId && trips.some(t => t.id === storedLastEditedTripId)) {
+                    currentTripId = storedLastEditedTripId;
+                    console.log('載入最後編輯的行程:', storedLastEditedTripId);
+                } else if (storedCurrentTripId && trips.some(t => t.id === storedCurrentTripId)) {
+                    currentTripId = storedCurrentTripId;
+                    console.log('載入儲存的當前行程:', storedCurrentTripId);
+                } else if (trips.length > 0) {
+                    const sorted = [...trips].sort((a, b) =>
+                        new Date(b.updatedAt || b.createdAt || 0) - new Date(a.updatedAt || a.createdAt || 0)
+                    );
+                    currentTripId = sorted[0].id;
+                    console.log('載入最新行程:', currentTripId);
+                } else {
+                    currentTripId = null;
+                    console.log('沒有行程可載入');
+                }
+
+
+                // 讀取舊版全域 members（相容性）
+                let legacyMembers = null;
+                if (storedMembers) legacyMembers = JSON.parse(storedMembers);
+                if (storedExpenses) expenses = JSON.parse(storedExpenses);
+                // 讀取匯率時，需確保 TWD 仍在
+                if (storedRates) {
+                    const loadedRates = JSON.parse(storedRates);
+                    exchangeRates = { 'TWD': 1, ...loadedRates };
+                }
+                if (storedLastUpdated) rateLastUpdated = storedLastUpdated;
+                
+                // 將成員綁定到目前行程（每個行程各自有 members）
+                const currentTrip = trips.find(t => t.id === currentTripId);
+                if (currentTrip) {
+                    if (Array.isArray(currentTrip.members)) {
+                        members = [...currentTrip.members];
+                        console.log('載入行程成員:', currentTrip.name, '成員數:', members.length);
+                    } else if (Array.isArray(legacyMembers)) {
+                        // 首次升級：從舊版全域 members 移入目前行程
+                        currentTrip.members = [...legacyMembers];
+                        members = [...legacyMembers];
+                        console.log('從舊版載入成員到行程:', currentTrip.name, '成員數:', members.length);
+                    } else {
+                        currentTrip.members = [];
+                        members = [];
+                        console.log('行程無成員:', currentTrip.name);
+                    }
+                } else {
+                    members = Array.isArray(legacyMembers) ? [...legacyMembers] : [];
+                    console.log('無當前行程，載入舊版成員:', members.length);
+                }
+
+                // 若當前行程成員為空，嘗試從該行程的支出推斷成員（即使支出已有 tripId）
+                if (currentTripId) {
+                    const ct = trips.find(t => t.id === currentTripId);
+                    if (ct && (!Array.isArray(ct.members) || ct.members.length === 0)) {
+                        const inferredMembers2 = new Set();
+                        (Array.isArray(expenses) ? expenses : []).filter(exp => exp.tripId === currentTripId).forEach(exp => {
+                            if (exp && exp.payer) inferredMembers2.add(exp.payer);
+                            if (exp && Array.isArray(exp.sharers)) exp.sharers.forEach(s => inferredMembers2.add(s));
+                        });
+                        if (inferredMembers2.size > 0) {
+                            ct.members = Array.from(inferredMembers2);
+                            members = [...ct.members];
+                            if (!currentPayer || !members.includes(currentPayer)) currentPayer = members[0];
+                            if (currentSharers.length === 0) currentSharers = [...members];
+                            saveAllData();
+                        }
+                    }
+                }
+
+                // 若沒有任何行程，建立預設行程，並帶入舊版成員（若有）
+                if (trips.length === 0) {
+                    console.log('沒有行程，創建預設行程');
+                    const defaultTrip = {
+                        id: 'trip_' + Date.now(),
+                        name: '預設行程',
+                        createdAt: new Date().toISOString(),
+                        members: Array.isArray(legacyMembers) ? [...legacyMembers] : []
+                    };
+                    trips.push(defaultTrip);
+                    currentTripId = defaultTrip.id;
+                    members = [...defaultTrip.members];
+                    // 設定付款人與分攤人
+                    if (members.length > 0) {
+                        currentPayer = members[0];
+                        currentSharers = [...members];
+                    } else {
+                        currentPayer = null;
+                        currentSharers = [];
+                    }
+                    console.log('創建預設行程完成:', defaultTrip);
+                    // 立即持久化，確保首次渲染可用
+                    saveAllData();
+                }
+
+                // 將沒有 tripId 的舊版支出遷移到當前行程，並以其成員補齊當前行程成員（若為空）
+                if (currentTripId && Array.isArray(expenses) && expenses.some(exp => !exp.tripId)) {
+                    expenses = expenses.map(exp => ({ ...exp, tripId: exp.tripId || currentTripId }));
+                    const ct = trips.find(t => t.id === currentTripId);
+                    if (ct && (ct.members == null || ct.members.length === 0)) {
+                        const inferredMembers = new Set();
+                        expenses.filter(exp => exp.tripId === currentTripId).forEach(exp => {
+                            if (exp.payer) inferredMembers.add(exp.payer);
+                            if (Array.isArray(exp.sharers)) exp.sharers.forEach(s => inferredMembers.add(s));
+                        });
+                        ct.members = Array.from(inferredMembers);
+                        members = [...ct.members];
+                        if (members.length > 0) {
+                            currentPayer = members.includes(currentPayer) ? currentPayer : members[0];
+                            currentSharers = members.length > 0 ? [...members] : [];
+                        }
+                    }
+                    saveAllData();
+                }
+
+                // 修正 currentPayer 和 currentSharers
+                if (members.length > 0) {
+                    // 如果沒有儲存的 payer，預設為第一個成員
+                    if (!currentPayer || !members.includes(currentPayer)) {
+                         currentPayer = members[0];
+                    }
+                    // 如果沒有儲存的 sharers，預設為全選
+                    if (currentSharers.length === 0) {
+                        currentSharers = [...members];
+                    }
+                } else {
+                    currentPayer = null;
+                    currentSharers = [];
+                }
+                
+            } catch (e) {
+                console.error("載入 Local Storage 資料失敗:", e);
+                // 失敗時使用預設值
+                exchangeRates = { ...defaultExchangeRates };
+                trips = [];
+                currentTripId = null;
+                showMessage("資料載入失敗，已使用預設值。", 'error');
+            }
+        }
+        
+        // --- Cloud Sync Helpers (Firebase Firestore) ---
+        function genTripId(len = 24) {
+          const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+          let out = '';
+          for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+          return out;
+        }
+        function tripDocRef(tripId) { return db.collection('trips').doc(tripId); }
+        function membersColRef(tripId) { return tripDocRef(tripId).collection('members'); }
+        function expensesColRef(tripId) { return tripDocRef(tripId).collection('expenses'); }
+
+        function serializeLocalTrip() {
+          return {
+            name: (trips.find(t => t.id === currentTripId) || {}).name || '未命名行程',
+            baseCurrency: 'TWD',
+            exchangeRates: exchangeRates || { TWD: 1 },
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            updatedBy: 'web',
+            members: members.map(m => ({ id: m, name: m })),
+            expenses: expenses.filter(e => e.tripId === currentTripId)
+          };
+        }
+
+        async function hydrateLocalFromCloud(tripId) {
+          if (!db) db = await ensureDbReady();
+          try {
+            if (!db) { showMessage('Cloud not initialized', 'error'); return; }
+            const doc = await tripDocRef(tripId).get();
+            if (!doc.exists) throw new Error('Trip not found');
+            const data = doc.data() || {};
+            const memSnap = await membersColRef(tripId).get();
+            const expSnap = await expensesColRef(tripId).get();
+            const cloudMembers = memSnap.docs.map(d => (d.data() || {}).name).filter(Boolean);
+            const cloudExpenses = expSnap.docs.map(d => ({ id: d.id, ...(d.data() || {}) }));
+
+            // Write back to local storage format
+            exchangeRates = data.exchangeRates || { TWD: 1 };
+            localStorage.setItem('travel_rates', JSON.stringify(exchangeRates));
+            trips = [{
+              id: tripId,
+              name: data.name || '未命名行程',
+              members: cloudMembers
+            }];
+            currentTripId = tripId;
+            localStorage.setItem('travel_trips', JSON.stringify(trips));
+            localStorage.setItem('travel_current_trip_id', currentTripId);
+            members = cloudMembers;
+            localStorage.setItem('travel_members', JSON.stringify(members));
+
+            const localExps = cloudExpenses.map(x => ({
+              id: x.id,
+              tripId: tripId,
+              description: x.description || '',
+              category: x.category || '',
+              amount: x.amount || 0,
+              currency: x.currency || 'TWD',
+              rateAtCreation: x.rateAtCreation != null ? x.rateAtCreation : 1,
+              payer: x.payer || '',
+              sharers: Array.isArray(x.sharers) ? x.sharers : [],
+              customSplit: x.customSplit || null,
+              createdAt: x.createdAt || new Date().toISOString()
+            }));
+            expenses = localExps;
+            localStorage.setItem('travel_expenses', JSON.stringify(expenses));
+
+            // Re-render
+            renderTrips();
+            switchToTrip(currentTripId);
+          } catch (e) {
+            console.error(e);
+            showMessage('Link 失敗：' + (e.message || 'unknown'), 'error');
+            throw e;
+          }
+        }
+
+        async function pushTripToCloud(tripId) {
+          try {
+            if (!db) { showMessage('Cloud not initialized', 'error'); return; }
+            const snap = serializeLocalTrip();
+            await tripDocRef(tripId).set({
+              name: snap.name,
+              baseCurrency: snap.baseCurrency,
+              exchangeRates: snap.exchangeRates,
+              updatedAt: new Date().toISOString(),
+              updatedBy: 'web'
+            }, { merge: true });
+
+            const memRef = membersColRef(tripId);
+            const memDocs = await memRef.get();
+            const batch = db.batch();
+            memDocs.forEach(d => batch.delete(d.ref));
+            snap.members.forEach(m => {
+              const ref = memRef.doc(m.id);
+              batch.set(ref, { name: m.name, updatedAt: new Date().toISOString(), updatedBy: 'web' });
+            });
+            await batch.commit();
+
+            const expRef = expensesColRef(tripId);
+            const expDocs = await expRef.get();
+            const batch2 = db.batch();
+            expDocs.forEach(d => batch2.delete(d.ref));
+            snap.expenses.forEach(e => {
+              const id = e.id || db.collection('_').doc().id;
+              const ref = expRef.doc(id);
+              batch2.set(ref, {
+                description: e.description,
+                category: e.category,
+                amount: e.amount,
+                currency: e.currency,
+                rateAtCreation: e.rateAtCreation != null ? e.rateAtCreation : 1,
+                payer: e.payer,
+                sharers: e.sharers || [],
+                customSplit: e.customSplit || null,
+                createdAt: e.createdAt || new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                updatedBy: 'web'
+              });
+            });
+            await batch2.commit();
+          } catch (e) {
+            console.error(e);
+            showMessage('Push 失敗：' + (e.message || 'unknown'), 'error');
+            throw e;
+          }
+        }
+
+        let unsubscribeCloud = null;
+        async function subscribeTrip(tripId) {
+          if (!db) db = await ensureDbReady();
+          if (!db) { showMessage('Cloud not initialized', 'error'); return; }
+          // cancel existing listener
+          if (unsubscribeTrip) { unsubscribeTrip(); unsubscribeTrip = null; }
+          if (unsubscribeCloud) { unsubscribeCloud(); unsubscribeCloud = null; }
+          // Trip doc only: pause writes while applying cloud updates
+          unsubscribeTrip = db.collection('trips').doc(tripId).onSnapshot(async (doc) => {
+            if (!doc.exists) return;
+            if (isSyncingToCloud) return; // skip self-triggered updates
+            try {
+              isUpdatingFromCloud = true;
+              console.log('🔵 Cloud → Local update detected');
+              await hydrateLocalFromCloud(tripId);
+              console.log('Cloud update applied');
+            } finally {
+              isUpdatingFromCloud = false;
+            }
+          });
+        }
+
+        // mirror local -> cloud (overwrite members & expenses for current trip)
+        async function mirrorLocalToCloud(tripId) {
+          if (isSyncingToCloud || isUpdatingFromCloud) return; // avoid infinite loop
+          isSyncingToCloud = true;
+          try {
+            if (!db) db = await ensureDbReady();
+            if (!tripId) return;
+            console.log('🟢 Sync → Cloud start');
+            const tripDoc = db.collection('trips').doc(tripId);
+
+            await tripDoc.set({
+              name: getCurrentTripName(),
+              baseCurrency: 'TWD',
+              exchangeRates,
+              updatedAt: new Date().toISOString()
+            }, { merge: true });
+
+            const memRef = tripDoc.collection('members');
+            const expRef = tripDoc.collection('expenses');
+
+            const batch = db.batch();
+
+            // Delete old members
+            const oldMembers = await memRef.get();
+            oldMembers.forEach(d => batch.delete(d.ref));
+
+            // Add current members
+            members.forEach(m => batch.set(memRef.doc(m), { name: m }));
+
+            // Delete old expenses
+            const oldExps = await expRef.get();
+            oldExps.forEach(d => batch.delete(d.ref));
+
+            // Add current expenses
+            expenses.filter(e => e.tripId === currentTripId).forEach(e => {
+              const id = e.id || db.collection('_').doc().id;
+              batch.set(expRef.doc(id), e);
+            });
+
+            await batch.commit();
+            console.log('✅ Sync → Cloud complete');
+          } catch (e) {
+            console.error('❌ mirrorLocalToCloud failed:', e);
+          } finally {
+            isSyncingToCloud = false;
+          }
+        }
+
+        // Link to a remote trip code: hydrate, set state, subscribe, then mirror once
+        async function linkToTripCode(code) {
+          try { db = await ensureDbReady(); } catch(e) { console.error(e); showMessage('Cloud not initialized (SDK load failed).', 'error'); return; }
+          if (!code) { showMessage('請輸入代碼', 'warning'); return; }
+
+          try {
+            await hydrateLocalFromCloud(code);
+            syncedTripId = code;
+            setCloudStatus('已同步：' + code);
+            await subscribeTrip(code);
+            try { await mirrorLocalToCloud(code); } catch(e) {}
+            showMessage('Linked to cloud trip: ' + code, 'success');
+          } catch (e) {
+            const msg = '找不到代碼 ' + code + ' 的雲端行程。要用你目前的本機資料來建立嗎？';
+            showConfirmDialogGeneric(
+              '建立雲端行程',
+              msg,
+              () => { hideConfirmDialog(); },
+              async () => {
+                try {
+                  await mirrorLocalToCloud(code);
+                  syncedTripId = code;
+                  setCloudStatus('已同步：' + code);
+                  await subscribeTrip(code);
+                  showMessage('Created and linked: ' + code, 'success');
+                } catch (err) {
+                  console.error('pushTripToCloud failed:', err);
+                  showMessage('建立雲端行程失敗：' + (err.message || ''), 'error');
+                } finally { hideConfirmDialog(); }
+              }
+            );
+            const keepBtn = document.getElementById('confirm-keep-expenses');
+            const delBtn = document.getElementById('confirm-delete-expenses');
+            if (keepBtn) keepBtn.textContent = '取消';
+            if (delBtn) delBtn.textContent = '建立';
+          }
+        }
+
+        // Cancel sync: unsubscribe and fork to a new local trip id
+        function cancelSync() {
+          if (typeof unsubscribeCloud === 'function') { unsubscribeCloud(); unsubscribeCloud = null; }
+          if (unsubscribeTrip) { unsubscribeTrip(); unsubscribeTrip = null; }
+          const newId = genTripId();
+          const idx = trips.findIndex(t => t.id === currentTripId);
+          if (idx >= 0) { trips[idx].id = newId; }
+          expenses = expenses.map(e => (e.tripId === currentTripId ? { ...e, tripId: newId } : e));
+          currentTripId = newId;
+          syncedTripId = null;
+          saveAllData();
+          renderTrips();
+          switchToTrip(currentTripId);
+          setCloudStatus('未同步');
+          showMessage('已取消同步，並複製為你的獨立行程。', 'success');
+        }
+
+        /**
+         * 儲存所有核心資料到 Local Storage
+         */
+        function saveAllData() {
+            if (isUpdatingFromCloud) return; // skip saves triggered by remote updates
+            try {
+                console.log('開始儲存資料...', {
+                    trips: trips,
+                    currentTripId: currentTripId,
+                    members: members,
+                    expenses: expenses
+                });
+                
+                // 將當前行程的 members 寫回 trips
+                if (currentTripId) {
+                    const ct = trips.find(t => t.id === currentTripId);
+                    if (ct) {
+                        ct.members = [...members];
+                        console.log('更新行程成員:', ct.name, '成員:', ct.members);
+                    }
+                }
+                
+                localStorage.setItem('travel_trips', JSON.stringify(trips));
+                localStorage.setItem('travel_current_trip_id', currentTripId);
+                // 保留舊鍵以相容，但內容等同目前行程成員
+                localStorage.setItem('travel_members', JSON.stringify(members));
+                localStorage.setItem('travel_expenses', JSON.stringify(expenses));
+                // 儲存時，可以排除 TWD (因為 TWD 永遠是 1)
+                const ratesToSave = { ...exchangeRates };
+                delete ratesToSave.TWD; 
+                localStorage.setItem('travel_rates', JSON.stringify(ratesToSave));
+                localStorage.setItem('travel_rate_update', rateLastUpdated);
+                // 紀錄最後編輯的行程 ID（若無則存空字串）
+                localStorage.setItem('travel_last_edited_trip_id', currentTripId || '');
+                
+                console.log('資料儲存完成');
+            } catch (e) {
+                console.error("儲存資料到 Local Storage 失敗:", e);
+                showMessage("資料儲存失敗，請檢查瀏覽器設定。", 'error');
+            }
+            // auto-mirror to cloud when linked
+            if (syncedTripId && db) {
+              // fire-and-forget; do not block UI
+              mirrorLocalToCloud(syncedTripId).catch((e) => console.warn('mirror failed:', e));
+            }
+        }
+
+        // 將目前資料打包成 JSON 字串
+        function snapshotAllData() {
+            return {
+                travel_trips: JSON.parse(localStorage.getItem('travel_trips') || '[]'),
+                travel_current_trip_id: localStorage.getItem('travel_current_trip_id') || null,
+                travel_members: JSON.parse(localStorage.getItem('travel_members') || '[]'),
+                travel_expenses: JSON.parse(localStorage.getItem('travel_expenses') || '[]'),
+                travel_rates: JSON.parse(localStorage.getItem('travel_rates') || '{}'),
+                travel_rate_update: localStorage.getItem('travel_rate_update') || '',
+                travel_last_edited_trip_id: localStorage.getItem('travel_last_edited_trip_id') || ''
+            };
+        }
+
+        
+
+        async function exportTripToExcel() {
+            if (!currentTripId) {
+                showMessage('Please select a trip first.', 'warning');
+                return;
+            }
+            const trip = trips.find(t => t.id === currentTripId);
+            if (!trip) {
+                showMessage('Current trip not found.', 'error');
+                return;
+            }
+            const tripExpenses = expenses.filter(exp => exp.tripId === currentTripId);
+            if (tripExpenses.length === 0) {
+                showMessage('No expenses in this trip.', 'warning');
+                return;
+            }
+            const workbook = new ExcelJS.Workbook();
+            const sheet = workbook.addWorksheet(trip.name || 'Trip');
+            // header
+            sheet.addRow(['Description', 'Category', 'Amount', 'Currency', 'Payer', 'Sharers', 'CustomSplit', 'CreatedAt']);
+            const header = sheet.getRow(1);
+            header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+            header.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4F46E5' } };
+            // rows
+            tripExpenses.forEach(exp => {
+                const sharersText = Array.isArray(exp.sharers) ? exp.sharers.join(', ') : '';
+                const customSplitText = exp.customSplit
+                    ? Object.entries(exp.customSplit).map(([name, val]) => name + ': ' + (exp.currency || '') + ' ' + val).join('; ')
+                    : '';
+                sheet.addRow([
+                    exp.description || '',
+                    exp.category || '',
+                    exp.amount != null ? exp.amount : '',
+                    exp.currency || '',
+                    exp.payer || '',
+                    sharersText,
+                    customSplitText,
+                    exp.createdAt ? new Date(exp.createdAt).toISOString() : ''
+                ]);
+            });
+            // width
+            sheet.columns.forEach(col => { col.width = 20; });
+            // download
+            const buffer = await workbook.xlsx.writeBuffer();
+            const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            a.href = url;
+            a.download = (trip.name || 'trip') + '-' + stamp + '.xlsx';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showMessage('Excel exported.', 'success');
+        }
+
+        function markTripEdited(tripId) {
+            lastEditedTripId = tripId;
+            const t = trips.find(x => x.id === tripId);
+            if (t) t.updatedAt = new Date().toISOString();
+            localStorage.setItem('travel_last_edited_trip_id', tripId || '');
+        }
+
+        // --- 工具函數 ---
+
+        /**
+         * 顯示自定義訊息方塊
+         * @param {string} message 
+         * @param {string} type 
+         */
+        function showMessage(message, type = 'warning') {
+            messageContentEl.textContent = message;
+            // 顯示前先清理樣式
+            messageContentEl.className = 'max-w-sm mx-auto p-3 rounded-lg shadow-xl text-center font-medium';
+            // 類型樣式
+            if (type === 'warning') {
+                messageContentEl.classList.add('bg-yellow-500', 'text-white');
+            } else if (type === 'success') {
+                messageContentEl.classList.add('bg-green-500', 'text-white');
+            } else if (type === 'error') {
+                messageContentEl.classList.add('bg-red-500', 'text-white');
+            }
+            // 正確顯示
+            messageBoxEl.classList.remove('hidden');
+            messageBoxEl.style.display = 'block';
+
+            // 3 秒後確實關閉（同時移除 inline style）
+            setTimeout(() => {
+                messageBoxEl.classList.add('hidden');
+                messageBoxEl.style.display = 'none';
+            }, 3000);
+        }
+
+        /**
+         * 顯示確認對話框
+         * @param {string} memberName 要刪除的成員名稱
+         * @param {number} expenseCount 相關支出記錄數量
+         */
+        function showConfirmDialog(memberName, expenseCount) {
+            confirmTitleEl.textContent = '刪除成員確認';
+            confirmMessageEl.innerHTML = `
+                成員 "<strong>${memberName}</strong>" 有 <strong>${expenseCount}</strong> 筆相關支出記錄。<br><br>
+                請選擇處理方式：
+            `;
+            pendingMemberName = memberName;
+            // 清空任何通用處理器，改用成員刪除預設流程
+            confirmKeepHandler = null;
+            confirmDeleteHandler = null;
+            // 顯示並鎖定背景滾動
+            confirmDialogEl.classList.remove('hidden');
+            document.body.classList.add('overflow-hidden');
+        }
+
+        /**
+         * 通用確認對話框 (自定義標題/訊息與行為)
+         * @param {string} title
+         * @param {string} htmlMessage
+         * @param {Function|null} onKeep
+         * @param {Function|null} onDelete
+         */
+        function showConfirmDialogGeneric(title, htmlMessage, onKeep, onDelete) {
+            confirmTitleEl.textContent = title;
+            confirmMessageEl.innerHTML = htmlMessage;
+            pendingMemberName = null; // 避免誤觸用成員刪除邏輯
+            confirmKeepHandler = typeof onKeep === 'function' ? onKeep : null;
+            confirmDeleteHandler = typeof onDelete === 'function' ? onDelete : null;
+            // 顯示並鎖定背景滾動
+            confirmDialogEl.classList.remove('hidden');
+            document.body.classList.add('overflow-hidden');
+        }
+
+        /**
+         * 隱藏確認對話框
+         */
+        function hideConfirmDialog() {
+            confirmDialogEl.classList.add('hidden');
+            pendingMemberName = null;
+            // 解除背景鎖定
+            document.body.classList.remove('overflow-hidden');
+        }
+
+        /**
+         * 將任意幣別金額轉換為 TWD
+         * @param {number} amount 
+         * @param {string} currency 
+         * @returns {number} TWD equivalent
+         */
+        function convertToTWD(amount, currency) {
+            // 確保匯率存在，否則使用 1 (TWD)
+            const rate = exchangeRates[currency] || 1; 
+            return amount * rate;
+        }
+
+        // 以單筆支出所建立時的匯率換算為 TWD（若有保存 rateAtCreation 則優先使用）
+        function convertExpenseToTWD(exp) {
+            const amt = Number(exp && exp.amount != null ? exp.amount : 0);
+            const cur = exp && exp.currency ? exp.currency : 'TWD';
+            let rate = 1;
+            if (exp && exp.rateAtCreation != null) {
+                rate = Number(exp.rateAtCreation) || 0;
+            } else if (cur === 'TWD') {
+                rate = 1;
+            } else if (exchangeRates && exchangeRates[cur] != null) {
+                rate = Number(exchangeRates[cur]) || 0;
+            } else {
+                rate = 0;
+            }
+            return Math.round(amt * rate);
+        }
+
+        // 一次性補齊舊支出缺少的建立時匯率（可選）
+        function backfillRateAtCreationIfMissing() {
+            let changed = false;
+            expenses.forEach(exp => {
+                if (exp && exp.rateAtCreation == null) {
+                    exp.rateAtCreation = (exp.currency === 'TWD') ? 1 : (exchangeRates[exp.currency] || 0);
+                    changed = true;
+                }
+            });
+            if (changed) { saveAllData(); showMessage('Stamped rates for existing expenses.', 'success'); }
+        }
+
+        /**
+         * 格式化金額，保留兩位小數，加入千位分隔符
+         * @param {number} amount 
+         * @param {number} decimals 
+         * @returns {string}
+         */
+        function formatAmount(amount, decimals = 2) {
+            if (typeof amount !== 'number' || isNaN(amount)) return '0.00';
+            // 四捨五入到指定位數
+            const roundedAmount = Math.round(amount * Math.pow(10, decimals)) / Math.pow(10, decimals);
+            return roundedAmount.toLocaleString('en-US', {
+                minimumFractionDigits: decimals,
+                maximumFractionDigits: decimals
+            });
+        }
+        
+        // --- FX helpers ---
+        function getStoredRates() {
+          try { return JSON.parse(localStorage.getItem('travel_rates') || '{}'); } catch(e) { return {}; }
+        }
+        function setStoredRates(obj) {
+          localStorage.setItem('travel_rates', JSON.stringify(obj || {}));
+        }
+        function getStoredRateUpdatedAt() {
+          return localStorage.getItem('travel_rate_update') || '';
+        }
+        function setStoredRateUpdatedAt(val) {
+          localStorage.setItem('travel_rate_update', val || '');
+        }
+        async function fetchLiveRates(baseCurrency) {
+          // We will fetch with USD base (more widely supported), then convert to TWD-base rates.
+          // Fallback: open.er-api.com if exchangerate.host fails.
+          const wanted = Object.keys(exchangeRates || { TWD:1, USD:1, JPY:1, KRW:1, EUR:1, CNY:1 });
+          if (!wanted.includes('TWD')) wanted.push('TWD');
+          if (!wanted.includes('USD')) wanted.push('USD');
+
+          async function fetchFromHost() {
+            // exchangerate.host with USD base
+            const url = 'https://api.exchangerate.host/latest?base=USD&symbols=' + encodeURIComponent(wanted.join(','));
+            const res = await fetch(url);
+            if (!res.ok) throw new Error('exchangerate.host HTTP ' + res.status);
+            const data = await res.json();
+            if (!data || !data.rates || !data.rates.TWD) throw new Error('exchangerate.host returned no usable data');
+            return data.rates; // USD->X
+          }
+
+          async function fetchFromErApi() {
+            // open.er-api.com with USD base
+            const url = 'https://open.er-api.com/v6/latest/USD';
+            const res = await fetch(url);
+            if (!res.ok) throw new Error('open.er-api.com HTTP ' + res.status);
+            const data = await res.json();
+            if (!data || !data.rates || !data.rates.TWD) throw new Error('open.er-api returned no usable data');
+            // Keep only needed symbols
+            const filtered = {};
+            wanted.forEach(k => { if (data.rates[k] != null) filtered[k] = data.rates[k]; });
+            return filtered; // USD->X
+          }
+
+          try {
+            // 1) Try exchangerate.host first
+            let usdToX = await fetchFromHost();
+            // 2) Convert USD-base table to TWD-base table
+            const twdPerUsd = usdToX.TWD; // TWD per 1 USD
+            const twdBase = { TWD: 1 };
+            wanted.forEach(code => {
+              if (code === 'TWD') return;
+              const usdToCode = usdToX[code];
+              if (usdToCode && usdToCode > 0) {
+                // 1 code = (TWD per USD) / (code per USD) TWD
+                twdBase[code] = twdPerUsd / usdToCode;
+              }
+            });
+            exchangeRates = twdBase;
+            setStoredRates(Object.assign({}, twdBase, { TWD: undefined })); // store without forcing TWD
+            setStoredRateUpdatedAt(new Date().toISOString());
+            if (typeof renderExchangeRateInputs === 'function') renderExchangeRateInputs();
+            const el = document.getElementById('rates-updated-at');
+            if (el) el.textContent = 'Updated: ' + new Date().toLocaleString('zh-TW');
+            showMessage('Rates updated', 'success');
+            calculateAndRenderSettlement();
+            saveAllData();
+          } catch (e1) {
+            console.warn('exchangerate.host failed, trying fallback...', e1);
+            try {
+              // Fallback: open.er-api.com
+              let usdToX = await fetchFromErApi();
+              const twdPerUsd = usdToX.TWD;
+              if (!twdPerUsd) throw new Error('Fallback has no TWD');
+              const twdBase = { TWD: 1 };
+              wanted.forEach(code => {
+                if (code === 'TWD') return;
+                const usdToCode = usdToX[code];
+                if (usdToCode && usdToCode > 0) {
+                  twdBase[code] = twdPerUsd / usdToCode;
+                }
+              });
+              exchangeRates = twdBase;
+              setStoredRates(Object.assign({}, twdBase, { TWD: undefined }));
+              setStoredRateUpdatedAt(new Date().toISOString());
+              if (typeof renderExchangeRateInputs === 'function') renderExchangeRateInputs();
+              const el = document.getElementById('rates-updated-at');
+              if (el) el.textContent = 'Updated: ' + new Date().toLocaleString('zh-TW');
+              showMessage('Rates updated (fallback)', 'success');
+              calculateAndRenderSettlement();
+              saveAllData();
+            } catch (e2) {
+              console.error('Both FX sources failed', e2);
+              showMessage('Failed to fetch rates from both sources', 'error');
+            }
+          }
+        }
+        
+        // --- 匯率管理邏輯 ---
+
+        /**
+         * 渲染匯率輸入欄位
+         */
+        function renderExchangeRateInputs() {
+            // Pull latest from storage first
+            const latest = getStoredRates();
+            if (latest && Object.keys(latest).length > 0) {
+                exchangeRates = { 'TWD': 1, ...latest };
+            }
+            const storedTs = getStoredRateUpdatedAt();
+            if (storedTs) rateLastUpdated = storedTs;
+
+            exchangeRateInputsEl.innerHTML = '';
+
+            // 更新最後更新時間
+            rateLastUpdatedEl.textContent = `上次匯率更新時間: ${rateLastUpdated}`;
+
+            // Build rows with per-currency delete button
+            const container = document.getElementById('exchange-rate-inputs');
+            if (!container) return;
+            container.innerHTML = '';
+            const entries = Object.entries(exchangeRates);
+            entries.forEach(([code, rate]) => {
+                const row = document.createElement('div');
+                row.className = 'flex items-center gap-2 mb-2';
+
+                const label = document.createElement('label');
+                label.textContent = code;
+                label.className = 'w-16 font-medium text-gray-700';
+
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.value = rate || 0;
+                input.min = '0';
+                input.step = '0.0001';
+                input.className = 'flex-1 p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm';
+                input.addEventListener('input', () => {
+                    const val = parseFloat(input.value);
+                    if (!isNaN(val)) {
+                        exchangeRates[code] = val;
+                        saveAllData();
+                        calculateAndRenderSettlement();
+                    }
+                });
+
+                let delBtn = null;
+                if (code !== 'TWD') {
+                    delBtn = document.createElement('button');
+                    delBtn.textContent = '✕';
+                    delBtn.title = 'Delete ' + code;
+                    delBtn.className = 'px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700 text-xs';
+                    delBtn.addEventListener('click', () => {
+                        if (confirm('Remove ' + code + ' from currency list?')) {
+                            delete exchangeRates[code];
+                            saveAllData();
+                            renderExchangeRateInputs();
+                            showMessage(code + ' removed.', 'success');
+                        }
+                    });
+                }
+
+                row.appendChild(label);
+                row.appendChild(input);
+                if (delBtn) row.appendChild(delBtn);
+                container.appendChild(row);
+            });
+            // 確保記錄支出的幣別選單也更新 (如果有新增幣別的話)
+            updateCurrencySelectOptions();
+        }
+
+        // 新增/移除幣別
+        function addCurrency() {
+            const input = document.getElementById('new-currency-input');
+            const code = (input && input.value ? input.value : '').trim().toUpperCase();
+            if (!code) { showMessage('Please enter a currency code', 'warning'); return; }
+            if (exchangeRates[code] != null) { showMessage(code + ' already exists', 'warning'); return; }
+            if (code === 'TWD') { showMessage('TWD already exists', 'warning'); return; }
+            exchangeRates[code] = 0; // user should input a value or refresh via API
+            saveAllData();
+            renderExchangeRateInputs();
+            showMessage(code + ' added. Please input its rate.', 'success');
+            if (input) input.value = '';
+        }
+        // standalone removeCurrency removed; deletion is handled per-row
+
+        /**
+         * 更新單一匯率
+         * @param {string} currency 
+         * @param {string} value 
+         */
+        function updateRate(currency, value) {
+            const newRate = parseFloat(value);
+            if (newRate > 0) {
+                exchangeRates[currency] = newRate;
+                showMessage(`${currency} 匯率已更新為 ${newRate}。`, 'success');
+                // 儲存資料
+                saveAllData(); 
+                // 重新計算所有結算數據
+                calculateAndRenderSettlement();
+                // 更新時間
+                rateLastUpdated = new Date().toLocaleString('zh-TW', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                rateLastUpdatedEl.textContent = `上次匯率更新時間: ${rateLastUpdated}`;
+
+            } else {
+                showMessage('匯率必須是正數。', 'error');
+                // 恢復舊值
+                document.getElementById(`rate-${currency}`).value = exchangeRates[currency];
+            }
+        }
+        
+        /**
+         * 更新記錄支出卡片中的幣別選單
+         */
+        function updateCurrencySelectOptions() {
+            if (!expenseCurrencySelect) return;
+
+            const currentCurrencies = Array.from(expenseCurrencySelect.options).map(o => o.value);
+            const availableCurrencies = Object.keys(exchangeRates);
+
+            // 移除已不存在的幣別選項
+            for (let i = expenseCurrencySelect.options.length - 1; i >= 0; i--) {
+                const option = expenseCurrencySelect.options[i];
+                if (!availableCurrencies.includes(option.value)) {
+                    expenseCurrencySelect.remove(i);
+                }
+            }
+
+            // 新增尚未在選單中的幣別選項
+            availableCurrencies.forEach(currency => {
+                if (!currentCurrencies.includes(currency)) {
+                    const option = document.createElement('option');
+                    option.value = currency;
+                    option.textContent = currency;
+                    expenseCurrencySelect.appendChild(option);
+                }
+            });
+        }
+        
+        // --- 類別晶片渲染與選擇 ---
+        
+        /**
+         * 渲染類別選擇晶片
+         */
+        function renderCategoryChips() {
+            categoryChipsEl.innerHTML = '';
+            categories.forEach(category => {
+                const isActive = category === currentCategory;
+                const chip = document.createElement('div');
+                chip.className = `chip-base ${isActive ? 'chip-category-active' : 'chip-category-inactive hover:bg-green-100'}`;
+                chip.textContent = category;
+                chip.onclick = () => selectCategory(category);
+                categoryChipsEl.appendChild(chip);
+            });
+        }
+
+        /**
+         * 選擇類別
+         * @param {string} category 
+         */
+        function selectCategory(category) {
+            currentCategory = category;
+            renderCategoryChips();
+        }
+
+
+        // --- 行程管理邏輯 ---
+
+        /**
+         * 新增行程
+         */
+        function addTrip() {
+            const name = tripNameInput.value.trim();
+            console.log('嘗試新增行程:', name);
+            if (name.length > 0 && !trips.some(trip => trip.name === name)) {
+                const id = genTripId();
+                const newTrip = {
+                    id,
+                    name: name,
+                    createdAt: new Date().toISOString(),
+                    members: []
+                };
+                trips.push(newTrip);
+                console.log('新增行程成功:', newTrip);
+                // 新行程自動成為當前行程
+                currentTripId = id;
+                markTripEdited(currentTripId);
+                tripNameInput.value = '';
+                // 清空成員列表，因為新行程沒有成員
+                members = [];
+                currentPayer = null;
+                currentSharers = [];
+                renderTrips();
+                renderMembers();
+                renderPayerChips();
+                renderShareChips();
+                saveAllData();
+                showMessage(`行程 "${name}" 已新增並設為當前行程！`, 'success');
+                updateHeaderTripName();
+
+                // Pre-fill cloud code box with the new trip id
+                const codeInput2 = document.getElementById('trip-code-input');
+                if (codeInput2) codeInput2.value = id;
+
+                // Automatically upload this trip to Firestore (if Firebase is configured)
+                try {
+                    if (window.firebase && (firebase.apps.length || firebaseConfig.apiKey)) {
+                        console.log('🚀 Auto-linking new trip to cloud: ' + id);
+                        linkToTripCode(id)
+                          .then(() => {
+                            showMessage('已自動建立雲端行程並同步：' + id, 'success');
+                          })
+                          .catch((e) => {
+                            console.error('Auto-link failed:', e);
+                            showMessage('自動上傳雲端失敗：' + (e.message || ''), 'error');
+                          });
+                    } else {
+                        console.log('Firebase not ready, skipping auto-link.');
+                    }
+                } catch (e) {
+                    console.error('Auto-link failed:', e);
+                    showMessage('自動上傳雲端失敗：' + (e.message || ''), 'error');
+                }
+            } else if (name.length > 0) {
+                showMessage(`行程 "${name}" 已存在。`, 'warning');
+            } else {
+                showMessage('行程名稱不能為空。', 'warning');
+            }
+        }
+
+        /**
+         * 切換到指定行程
+         * @param {string} tripId 行程 ID
+         */
+        function switchToTrip(tripId) {
+            currentTripId = tripId;
+            // 載入該行程的成員（每個行程各自獨立）
+            const t = trips.find(t => t.id === tripId);
+            members = t && Array.isArray(t.members) ? [...t.members] : [];
+            // 調整付款人與分攤人狀態
+            if (members.length > 0) {
+                if (!currentPayer || !members.includes(currentPayer)) currentPayer = members[0];
+                if (currentSharers.length === 0) currentSharers = [...members];
+                currentSharers = currentSharers.filter(s => members.includes(s));
+            } else {
+                currentPayer = null;
+                currentSharers = [];
+            }
+            // 載入該行程的支出記錄
+            loadTripExpenses();
+            renderTrips();
+            // 也同步更新成員管理（人數/晶片）
+            renderMembers();
+            renderPayerChips();
+            renderShareChips();
+            renderExpenses();
+            calculateAndRenderSettlement();
+            markTripEdited(tripId);
+            saveAllData();
+            
+            const trip = trips.find(t => t.id === tripId);
+            showMessage(`已切換到行程 "${trip.name}"`, 'success');
+            // 確保下拉同步當前選擇
+            if (tripSelectEl && tripSelectEl.value !== tripId) {
+                tripSelectEl.value = tripId;
+            }
+            updateHeaderTripName();
+
+            // Auto-fill cloud code input with current trip id
+            const codeInput = document.getElementById('trip-code-input');
+            if (codeInput) codeInput.value = tripId || '';
+        }
+
+        /**
+         * 刪除行程
+         * @param {string} tripId 行程 ID
+         */
+        function deleteTrip(tripId) {
+            const trip = trips.find(t => t.id === tripId);
+            if (!trip) return;
+
+            // 檢查是否有支出記錄
+            const tripExpenses = expenses.filter(exp => exp.tripId === tripId);
+            
+            if (tripExpenses.length > 0) {
+                const title = '刪除行程確認';
+                const msg = `行程 "<strong>${trip.name}</strong>" 有 <strong>${tripExpenses.length}</strong> 筆相關支出記錄。<br><br>請選擇處理方式：`;
+                // 保留記錄：刪除行程，但保留該行程的支出（將其 tripId 設為 null）
+                const onKeep = () => executeDeleteTrip(tripId, /*removeExpenses*/ false);
+                // 刪除記錄：刪除行程並刪除所有相關支出
+                const onDelete = () => executeDeleteTrip(tripId, /*removeExpenses*/ true);
+                showConfirmDialogGeneric(title, msg, onKeep, onDelete);
+            } else {
+                // 沒有支出記錄，直接刪除
+                executeDeleteTrip(tripId, /*removeExpenses*/ true);
+            }
+        }
+
+        /**
+         * 執行刪除行程
+         * @param {string} tripId
+         * @param {boolean} removeExpenses 若為 true，刪除該行程所有支出；false 則保留（tripId 設為 null）
+         */
+        function executeDeleteTrip(tripId, removeExpenses) {
+            const trip = trips.find(t => t.id === tripId);
+            if (!trip) { hideConfirmDialog(); return; }
+
+            // 刪除行程
+            trips = trips.filter(t => t.id !== tripId);
+
+            if (removeExpenses) {
+                expenses = expenses.filter(exp => exp.tripId !== tripId);
+            } else {
+                // 保留記錄：將該行程的支出 tripId 置為 null
+                expenses = expenses.map(exp => exp.tripId === tripId ? { ...exp, tripId: null } : exp);
+            }
+
+            // 若刪除的是當前行程，切換到最後一個行程
+            if (currentTripId === tripId) {
+                currentTripId = trips.length > 0 ? trips[trips.length - 1].id : null;
+                loadTripExpenses();
+            }
+
+            renderTrips();
+            updateHeaderTripName();
+            renderExpenses();
+            calculateAndRenderSettlement();
+            // 更新最後編輯行程標記
+            if (currentTripId) {
+                markTripEdited(currentTripId);
+            } else {
+                localStorage.removeItem('travel_last_edited_trip_id');
+            }
+            saveAllData();
+
+            const actionMsg = removeExpenses ? '（已刪除相關支出）' : '（保留相關支出）';
+            showMessage(`行程 "${trip.name}" 已刪除 ${actionMsg}`, 'success');
+            hideConfirmDialog();
+        }
+
+        /**
+         * 載入當前行程的支出記錄
+         */
+        function loadTripExpenses() {
+            // 這裡可以根據需要載入特定行程的支出記錄
+            // 目前所有支出都共用，未來可以按行程分離
+        }
+
+        /**
+         * 渲染行程列表
+         */
+        function renderTrips() {
+            console.log('renderTrips called, trips:', trips, 'currentTripId:', currentTripId);
+            tripListEl.innerHTML = '';
+            
+            if (trips.length === 0) {
+                tripListEl.innerHTML = '<p class="text-gray-400 text-sm italic text-center py-4">尚無行程</p>';
+                // 清空下拉選單
+                if (tripSelectEl) {
+                    tripSelectEl.innerHTML = '';
+                    const opt = document.createElement('option');
+                    opt.value = '';
+                    opt.textContent = '尚無行程';
+                    tripSelectEl.appendChild(opt);
+                    tripSelectEl.disabled = true;
+                }
+                // 更新當前行程顯示
+                currentTripNameEl.textContent = '無行程';
+                currentTripStatsEl.textContent = '0 筆支出';
+                console.log('沒有行程，顯示無行程狀態');
+                return;
+            }
+            
+            trips.forEach(trip => {
+                const tripItem = document.createElement('div');
+                const isActive = trip.id === currentTripId;
+                const tripExpenses = expenses.filter(exp => exp.tripId === trip.id);
+                
+                tripItem.className = `p-3 rounded-lg border cursor-pointer transition-all ${
+                    isActive 
+                        ? 'bg-blue-100 border-blue-300 shadow-sm' 
+                        : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
+                }`;
+                
+                tripItem.innerHTML = `
+                    <div class="flex items-center justify-between">
+                        <div class="flex-1">
+                            <p class="font-medium text-gray-800 ${isActive ? 'text-blue-800' : ''}">${trip.name}</p>
+                            <p class="text-xs text-gray-500">${tripExpenses.length} 筆支出</p>
+                            <div class="text-xs text-gray-400 mt-0.5">code: ${trip.id}</div>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            ${!isActive ? `<button onclick="switchToTrip('${trip.id}')" class="text-xs text-blue-600 hover:text-blue-800 px-2 py-1 rounded hover:bg-blue-50">切換</button>` : ''}
+                            <button data-copy-code="${trip.id}" class="text-xs text-gray-700 bg-gray-200 hover:bg-gray-300 px-2 py-1 rounded">Copy</button>
+                            <button onclick="deleteTrip('${trip.id}')" class="text-xs text-red-600 hover:text-red-800 px-2 py-1 rounded hover:bg-red-50">刪除</button>
+                        </div>
+                    </div>
+                `;
+                // Wire copy button
+                const copyBtn = tripItem.querySelector('[data-copy-code]');
+                if (copyBtn) {
+                    copyBtn.addEventListener('click', async (e) => {
+                        e.stopPropagation();
+                        try {
+                            await navigator.clipboard.writeText(trip.id);
+                            showMessage('Code copied', 'success');
+                        } catch (_) {}
+                        const codeBox = document.getElementById('trip-code-input');
+                        if (codeBox) codeBox.value = trip.id;
+                    });
+                }
+                tripListEl.appendChild(tripItem);
+            });
+
+            // 更新當前行程顯示
+            const currentTrip = trips.find(t => t.id === currentTripId);
+            if (currentTrip) {
+                currentTripNameEl.textContent = currentTrip.name;
+                const tripExpenses = expenses.filter(exp => exp.tripId === currentTripId);
+                currentTripStatsEl.textContent = `${tripExpenses.length} 筆支出`;
+                console.log('當前行程顯示:', currentTrip.name, '支出數:', tripExpenses.length);
+            } else {
+                currentTripNameEl.textContent = '無行程';
+                currentTripStatsEl.textContent = '0 筆支出';
+                console.log('沒有找到當前行程');
+            }
+
+            // 渲染下拉: 歷史行程
+            if (tripSelectEl) {
+                tripSelectEl.disabled = false;
+                tripSelectEl.innerHTML = '';
+                console.log('渲染行程下拉選單，行程數:', trips.length);
+                trips.forEach(trip => {
+                    const option = document.createElement('option');
+                    option.value = trip.id;
+                    option.textContent = trip.name;
+                    if (trip.id === currentTripId) {
+                        option.selected = true;
+                        console.log('設定當前行程為選中:', trip.name);
+                    }
+                    tripSelectEl.appendChild(option);
+                });
+            }
+        }
+
+        // --- 自定義分攤邏輯 ---
+        
+        /**
+         * 渲染自定義分攤輸入欄位
+         */
+        function renderCustomSplitInputs() {
+            customSplitInputs.innerHTML = '';
+            customSplitAmounts = {};
+            
+            if (currentSharers.length === 0) {
+                customSplitInputs.innerHTML = '<p class="text-gray-500 text-sm">請先選擇分攤人</p>';
+                return;
+            }
+            
+            currentSharers.forEach(member => {
+                const inputGroup = document.createElement('div');
+                inputGroup.className = 'flex items-center space-x-3';
+                inputGroup.innerHTML = `
+                    <label class="w-20 text-sm font-medium text-gray-700">${member}</label>
+                    <div class="flex-1 flex border border-gray-300 rounded-lg focus-within:ring-blue-500 focus-within:border-blue-500">
+                        <span class="p-2 bg-gray-100 rounded-l-lg border-r border-gray-300 text-sm">${expenseCurrencySelect.value}</span>
+                        <input type="number" id="split-${member}" placeholder="" min="0" step="1" data-name="${member}"
+                               class="flex-1 p-2 rounded-r-lg focus:outline-none appearance-none custom-split-input"
+                               onchange="updateCustomSplitAmount('${member}', this.value)">
+                    </div>
+                    <button onclick="setEqualSplit('${member}')" class="text-xs text-blue-600 hover:text-blue-800 px-2 py-1 rounded hover:bg-blue-50">
+                        均分
+                    </button>
+                `;
+                customSplitInputs.appendChild(inputGroup);
+            });
+            
+            updateSplitTotal();
+            // allow typing to immediately update button state (no need to press "apply")
+            const inputs = customSplitInputs.querySelectorAll('.custom-split-input');
+            inputs.forEach(inp => {
+              inp.addEventListener('input', () => {
+                const name = inp.getAttribute('data-name') || '';
+                updateCustomSplitAmount(name, inp.value);
+              });
+            });
+            inputs.forEach(inp => {
+              inp.addEventListener('focus', () => {
+                // When moving to 2nd or later fields, if only one empty remains, auto-fill it
+                autofillLastEmptyIfApplicable();
+              });
+            });
+        }
+
+        // 切換自定義分攤模式（缺這個函式會造成後續所有事件監聽器無法註冊）
+        function toggleCustomSplitMode() {
+            isCustomSplitMode = !isCustomSplitMode;
+
+            if (isCustomSplitMode) {
+                customSplitSection.classList.remove('hidden');
+                renderCustomSplitInputs();
+            } else {
+                customSplitSection.classList.add('hidden');
+                // 關閉自定義模式後，清空暫存分攤數值
+                customSplitAmounts = {};
+            }
+            // 依新狀態更新新增支出按鈕可用性
+            updateAddExpenseButtonState();
+        }
+
+        /**
+         * 更新自定義分攤金額
+         * @param {string} member 成員名稱
+         * @param {string} value 金額
+         */
+        function updateCustomSplitAmount(member, value) {
+            const raw = (value != null) ? String(value).trim() : '';
+            if (raw === '') {
+                // allow empty: remove from map
+                delete customSplitAmounts[member];
+                updateSplitTotal();
+                updateAddExpenseButtonState();
+                return;
+            }
+            const num = parseFloat(raw);
+            if (isNaN(num) || num <= 0) {
+                // non-positive or NaN should not count
+                delete customSplitAmounts[member];
+                updateSplitTotal();
+                updateAddExpenseButtonState();
+                return;
+            }
+            const newAmount = Math.round(num);
+            customSplitAmounts[member] = newAmount;
+            // DO NOT auto-compute others here
+            updateSplitTotal();
+            updateAddExpenseButtonState();
+        }
+
+        /**
+         * 智能計算剩餘金額
+         */
+        function calculateRemainingAmount() {
+            const totalAmount = Math.round(parseFloat(expenseAmountInput.value) || 0);
+            const enteredAmount = Object.values(customSplitAmounts).reduce((sum, amount) => sum + amount, 0);
+            const remainingAmount = totalAmount - enteredAmount;
+        }
+
+        /**
+         * 設定均分金額
+         * @param {string} member 成員名稱
+         */
+        function setEqualSplit(member) {
+            const totalAmount = Math.round(parseFloat(expenseAmountInput.value) || 0);
+            const shareCount = currentSharers.length;
+            const equalAmount = shareCount > 0 ? Math.round(totalAmount / shareCount) : 0;
+            customSplitAmounts[member] = equalAmount;
+            document.getElementById(`split-${member}`).value = String(equalAmount);
+            updateSplitTotal();
+        }
+
+        /**
+         * 更新分攤總計
+         */
+        function updateSplitTotal() {
+            const total = Object.values(customSplitAmounts).reduce((sum, amount) => sum + amount, 0);
+            const expenseAmount = Math.round(parseFloat(expenseAmountInput.value) || 0);
+            const difference = Math.abs(total - expenseAmount);
+            
+            if (expenseAmount > 0) {
+                const remaining = expenseAmount - total;
+                if (remaining > 0) {
+                    splitTotalEl.innerHTML = `總計: ${formatAmount(total, 0)} ${expenseCurrencySelect.value} <span class="text-orange-600">(剩餘: ${formatAmount(remaining, 0)})</span>`;
+                } else if (remaining < 0) {
+                    splitTotalEl.innerHTML = `總計: ${formatAmount(total, 0)} ${expenseCurrencySelect.value} <span class="text-red-600">(超出: ${formatAmount(Math.abs(remaining), 0)})</span>`;
+                } else {
+                    splitTotalEl.innerHTML = `總計: ${formatAmount(total, 0)} ${expenseCurrencySelect.value}`;
+                }
+            } else {
+                splitTotalEl.textContent = `總計: ${formatAmount(total, 0)} ${expenseCurrencySelect.value}`;
+            }
+            
+            if (difference === 0) {
+                splitTotalEl.classList.remove('text-red-600');
+                splitTotalEl.classList.add('text-green-600');
+            } else {
+                splitTotalEl.classList.remove('text-green-600');
+                splitTotalEl.classList.add('text-red-600');
+            }
+        }
+
+        // 當只剩一個自定義分攤輸入為空時，自動填入剩餘金額
+        function autofillLastEmptyIfApplicable() {
+            if (!isCustomSplitMode) return;
+            const total = Math.round(parseFloat(expenseAmountInput.value) || 0);
+            if (total <= 0) return;
+            if (!customSplitInputs) return;
+
+            const inputs = customSplitInputs.querySelectorAll('.custom-split-input');
+            let sum = 0;
+            const emptyEls = [];
+            inputs.forEach(inp => {
+                const raw = (inp.value || '').trim();
+                if (raw === '') {
+                    emptyEls.push(inp);
+                } else {
+                    const n = parseFloat(raw);
+                    if (!isNaN(n)) sum += Math.round(n);
+                }
+            });
+
+            if (emptyEls.length === 1) {
+                const remaining = total - sum;
+                if (remaining > 0) {
+                    const el = emptyEls[0];
+                    el.value = String(Math.round(remaining));
+                    const name = el.getAttribute('data-name') || '';
+                    updateCustomSplitAmount(name, el.value);
+                }
+            }
+        }
+
+        /**
+         * 套用自定義分攤
+         */
+        function applyCustomSplit() {
+            const totalAmount = Math.round(parseFloat(expenseAmountInput.value) || 0);
+            const splitTotal = Object.values(customSplitAmounts).reduce((sum, amount) => sum + amount, 0);
+            const difference = Math.abs(splitTotal - totalAmount);
+            
+            if (difference !== 0) {
+                showMessage(`分攤總計 (${formatAmount(splitTotal, 0)}) 與支出金額 (${formatAmount(totalAmount, 0)}) 不符，請檢查輸入。`, 'error');
+                return;
+            }
+            
+            const hasZeroAmount = Object.values(customSplitAmounts).some(amount => amount <= 0);
+            if (hasZeroAmount) {
+                showMessage('所有分攤金額必須大於零。', 'error');
+                return;
+            }
+            
+            showMessage('自定義分攤已套用！', 'success');
+            updateAddExpenseButtonState();
+        }
+
+        // --- 狀態更新 & 渲染 ---
+
+        /**
+         * 渲染成員清單
+         */
+        function renderMembers() {
+            console.log('渲染成員，當前成員數:', members.length, '成員列表:', members);
+            memberListEl.innerHTML = members.length > 0 ? '' : '<p class="text-gray-400 text-sm italic">請新增成員...</p>';
+            memberCountEl.textContent = `${members.length} 人`;
+            
+            members.forEach(member => {
+                const chip = document.createElement('div');
+                chip.className = 'chip-base bg-indigo-500 hover:bg-red-600 text-white border-indigo-500';
+                chip.innerHTML = `${member} 
+                    <button data-member="${member}" class="ml-1 text-xs font-bold opacity-75 hover:opacity-100" onclick="removeMember(event, '${member}')">
+                        &times;
+                    </button>
+                `;
+                memberListEl.appendChild(chip);
+            });
+            
+            // 修正/預設分攤人狀態：如果成員變動，修正 currentSharers
+            if (members.length > 0) {
+                // 過濾掉不存在的 sharers
+                currentSharers = currentSharers.filter(s => members.includes(s));
+                // 如果沒有分攤人，預設全選
+                if (currentSharers.length === 0) {
+                    currentSharers = [...members];
+                }
+            } else {
+                 currentSharers = [];
+            }
+            // 修正 currentPayer 確保其為有效成員
+            if (!members.includes(currentPayer)) {
+                 currentPayer = members.length > 0 ? members[0] : null; // 預設第一個成員付款
+            }
+
+            console.log('成員渲染完成，付款人:', currentPayer, '分攤人:', currentSharers);
+            // 儲存資料
+            saveAllData(); 
+            renderPayerChips();
+            renderShareChips();
+            calculateAndRenderSettlement();
+        }
+
+        /**
+         * 渲染付款人選擇晶片
+         */
+        function renderPayerChips() {
+            if (members.length === 0) {
+                payerChipsEl.innerHTML = '<p class="text-gray-400 text-sm italic p-2">請先新增成員</p>';
+                addExpenseBtn.disabled = true;
+                return;
+            }
+            
+            if (!currentPayer && members.length > 0) {
+                currentPayer = members[0];
+            }
+            
+            payerChipsEl.innerHTML = '';
+            members.forEach(member => {
+                const isActive = member === currentPayer;
+                const chip = document.createElement('div');
+                chip.className = `chip-base ${isActive ? 'chip-active' : 'chip-inactive hover:bg-gray-200'}`;
+                chip.textContent = member;
+                chip.onclick = () => selectPayer(member);
+                payerChipsEl.appendChild(chip);
+            });
+            updateAddExpenseButtonState();
+        }
+        
+        /**
+         * 渲染分攤人選擇晶片
+         */
+        function renderShareChips() {
+            if (members.length === 0) {
+                shareChipsEl.innerHTML = '<p class="text-gray-400 text-sm italic p-2">請先新增成員</p>';
+                addExpenseBtn.disabled = true;
+                customSplitBtn.classList.add('hidden');
+                return;
+            }
+            
+            shareChipsEl.innerHTML = '';
+            members.forEach(member => {
+                const isActive = currentSharers.includes(member);
+                const chip = document.createElement('div');
+                chip.className = `chip-base ${isActive ? 'chip-active' : 'chip-inactive hover:bg-gray-200'}`;
+                chip.textContent = member;
+                chip.onclick = () => toggleSharer(member);
+                shareChipsEl.appendChild(chip);
+            });
+            
+            // 顯示/隱藏自定義分攤按鈕
+            if (currentSharers.length > 0) {
+                customSplitBtn.classList.remove('hidden');
+            } else {
+                customSplitBtn.classList.add('hidden');
+                customSplitSection.classList.add('hidden');
+                isCustomSplitMode = false;
+            }
+            
+            updateAddExpenseButtonState();
+        }
+
+        /**
+         * 渲染支出清單
+         */
+        function renderExpenses() {
+            expensesListEl.innerHTML = '';
+            
+            // 如果沒有當前行程，顯示提示
+            if (!currentTripId) {
+                expensesListEl.innerHTML = '<li class="text-gray-400 italic text-sm">請先新增行程</li>';
+                return;
+            }
+            
+            // 只顯示當前行程的支出
+            const currentTripExpenses = expenses.filter(exp => exp.tripId === currentTripId);
+            
+            if (currentTripExpenses.length === 0) {
+                expensesListEl.innerHTML = '<li class="text-gray-400 italic text-sm">尚無支出記錄...</li>';
+                return;
+            }
+
+            currentTripExpenses.forEach((expense, index) => {
+                const sharersText = expense.sharers.join(', ');
+                const listItem = document.createElement('li');
+                const twdAmount = convertExpenseToTWD(expense);
+                const ts = expense.createdAt ? new Date(expense.createdAt).toLocaleString('zh-TW') : '';
+
+                // 生成分攤詳情
+                let splitDetails = '';
+                if (expense.customSplit) {
+                    splitDetails = '<p class="text-xs text-blue-600 mt-1">自定義分攤:</p>';
+                    expense.sharers.forEach(sharer => {
+                        if (expense.customSplit[sharer]) {
+                            splitDetails += `<p class="text-xs text-gray-500 ml-2">${sharer}: ${expense.currency} ${formatAmount(expense.customSplit[sharer])}</p>`;
+                        }
+                    });
+                }
+
+                listItem.className = 'p-3 bg-gray-50 rounded-lg border border-gray-200 flex justify-between items-start space-x-3';
+                listItem.innerHTML = `
+                    <div class="flex-1 min-w-0">
+                        <p class="font-semibold text-gray-800 truncate">${expense.description} 
+                           <span class="ml-2 text-xs font-medium text-green-700 bg-green-100 px-2 py-0.5 rounded-full">${expense.category}</span>
+                           ${expense.customSplit ? '<span class="ml-1 text-xs font-medium text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">自定義</span>' : ''}
+                        </p>
+                        <div class="text-xs text-gray-500">時間: ${ts}</div>
+                        <p class="text-sm text-gray-500">付款人: <span class="font-medium text-indigo-600">${expense.payer}</span></p>
+                        <p class="text-xs text-gray-400 truncate">分攤人: ${sharersText}</p>
+                        ${splitDetails}
+                    </div>
+                    <div class="flex-shrink-0 text-right">
+                        <p class="text-lg font-bold text-red-600">${expense.currency} ${formatAmount(expense.amount)}</p>
+                        <p class="text-xs text-gray-500">(約 TWD ${formatAmount(twdAmount, 0)})</p>
+                        <button class="text-xs text-red-400 hover:text-red-600 transition-colors" onclick="removeExpense(${expenses.indexOf(expense)})">
+                            刪除
+                        </button>
+                    </div>
+                `;
+                expensesListEl.appendChild(listItem);
+            });
+            calculateAndRenderSettlement();
+            saveAllData(); // 儲存資料
+        }
+
+        /**
+         * 更新新增支出按鈕的狀態
+         */
+        function updateAddExpenseButtonState() {
+            const amount = parseFloat(expenseAmountInput.value) || 0;
+            const description = expenseDescriptionInput.value.trim();
+            
+            let isReady = amount > 0 && description.length > 0 && currentPayer && currentSharers.length > 0;
+
+            // 自定義分攤模式：直接讀取輸入框數值，不需要先點「套用」
+            if (isCustomSplitMode && isReady) {
+                const map = collectCustomSplitFromInputs();
+                const splitTotal = Object.values(map).reduce((sum, v) => sum + v, 0);
+                const difference = Math.abs(splitTotal - amount);
+                const allPositive = Object.values(map).every(v => v > 0);
+                isReady = isReady && Object.keys(map).length === currentSharers.length && difference < 0.01 && allPositive;
+            }
+            
+            addExpenseBtn.disabled = !isReady;
+        }
+
+        // 直接蒐集目前自定義分攤輸入值
+        function collectCustomSplitFromInputs() {
+          const map = {};
+          const inputs = document.querySelectorAll('.custom-split-input');
+          inputs.forEach(inp => {
+            const name = inp.getAttribute('data-name') || inp.name || inp.id || '';
+            const val = parseFloat(inp.value);
+            if (name && !isNaN(val)) map[name] = val;
+          });
+          return map;
+        }
+
+        /**
+         * 切換設定區塊的收合狀態
+         */
+        function toggleSettings() {
+            isSettingsOpen = !isSettingsOpen;
+
+            if (isSettingsOpen) {
+                // open: allow scrolling area to expand
+                settingsContentEl.classList.remove('max-h-0');
+                settingsContentEl.classList.add('max-h-[70vh]', 'md:max-h-[80vh]', 'pt-4', 'border-t', 'border-gray-200');
+                toggleIconEl.classList.add('rotate-180');
+                toggleIconEl.classList.remove('rotate-0');
+            } else {
+                // close: collapse and remove any height classes
+                settingsContentEl.classList.remove('pt-4', 'border-t', 'border-gray-200', 'max-h-[70vh]', 'md:max-h-[80vh]');
+                settingsContentEl.classList.add('max-h-0');
+                toggleIconEl.classList.remove('rotate-180');
+                toggleIconEl.classList.add('rotate-0');
+            }
+        }
+
+
+        // --- 核心邏輯 (計算) ---
+
+        /**
+         * 1. 計算每個成員的淨餘額 (Net Balance)
+         * @returns {Map<string, {paid: number, spent: number, net: number}>}
+         */
+        function calculateBalances() {
+            const memberBalances = new Map();
+            members.forEach(m => memberBalances.set(m, { paid: 0, spent: 0, net: 0 }));
+
+            // 如果沒有當前行程，返回空餘額
+            if (!currentTripId) {
+                return memberBalances;
+            }
+
+            // 只計算當前行程的支出
+            const currentTripExpenses = expenses.filter(exp => exp.tripId === currentTripId);
+
+            currentTripExpenses.forEach(expense => {
+                // 轉換為 TWD 進行結算
+                const rateForExpense = (expense && expense.rateAtCreation != null)
+                    ? Number(expense.rateAtCreation) || 0
+                    : (exchangeRates[expense.currency] || (expense.currency === 'TWD' ? 1 : 0));
+                const amountTWD = Math.round((Number(expense.amount) || 0) * (rateForExpense || 0));
+                const sharerCount = expense.sharers.length;
+                
+                if (sharerCount === 0) return;
+
+                // 紀錄付款人已付金額
+                if (memberBalances.has(expense.payer)) {
+                    memberBalances.get(expense.payer).paid += amountTWD;
+                }
+
+                // 紀錄分攤人應花金額
+                if (expense.customSplit) {
+                    // 使用自定義分攤金額
+                    expense.sharers.forEach(sharer => {
+                        if (memberBalances.has(sharer) && expense.customSplit[sharer]) {
+                            const shareAmountTWD = Math.round((Number(expense.customSplit[sharer]) || 0) * (rateForExpense || 0));
+                            memberBalances.get(sharer).spent += shareAmountTWD;
+                        }
+                    });
+                } else {
+                    // 使用均分
+                    const sharePerPerson = amountTWD / sharerCount;
+                    expense.sharers.forEach(sharer => {
+                        if (memberBalances.has(sharer)) {
+                            memberBalances.get(sharer).spent += sharePerPerson;
+                        }
+                    });
+                }
+            });
+
+            // 計算淨餘額 (Net)
+            memberBalances.forEach((data, member) => {
+                data.net = data.paid - data.spent;
+            });
+
+            return memberBalances;
+        }
+
+        /**
+         * 2. 簡化債務 (清算路徑)
+         */
+        function simplifyDebts(memberBalances) {
+            const people = Array.from(memberBalances.keys());
+            const netBalances = people.map(p => ({
+                name: p,
+                // 這裡必須使用原始的浮點數餘額進行計算
+                amount: memberBalances.get(p).net
+            }));
+
+            const creditors = netBalances.filter(p => p.amount > 0); 
+            const debtors = netBalances.filter(p => p.amount < 0);   
+            
+            const settlements = [];
+            const tolerance = 0.5; // 小於 0.5 TWD 的債務忽略
+
+            // 將浮點數陣列複製並排序，以便優先處理最大債務/債權
+            creditors.sort((a, b) => b.amount - a.amount);
+            debtors.sort((a, b) => a.amount - b.amount); // amount 是負數，所以從小到大是絕對值從大到小
+
+            let i = 0, j = 0;
+            while (i < debtors.length && j < creditors.length) {
+                const debtor = debtors[i];
+                const creditor = creditors[j];
+                
+                // 交易金額取兩者之間較小者 (絕對值)
+                const paymentAmount = Math.min(creditor.amount, Math.abs(debtor.amount));
+
+                // 記錄交易
+                if (paymentAmount >= tolerance) {
+                    settlements.push({
+                        from: debtor.name,
+                        to: creditor.name,
+                        amount: paymentAmount
+                    });
+                }
+                
+                // 更新餘額
+                debtor.amount += paymentAmount; 
+                creditor.amount -= paymentAmount;
+                
+                // 移除已結清的成員
+                if (Math.abs(debtor.amount) < tolerance) {
+                    i++; // 換下一個債務人
+                }
+                if (creditor.amount < tolerance) {
+                    j++; // 換下一個債權人
+                }
+            }
+            
+            return settlements;
+        }
+
+        /**
+         * 3. 執行計算並渲染結算總覽和路徑
+         */
+        function calculateAndRenderSettlement() {
+            if (members.length === 0 || !currentTripId) {
+                 settlementListEl.innerHTML = '<p class="text-indigo-300 text-sm text-center">請新增成員與行程來計算</p>';
+                 settlementPathEl.innerHTML = '<p class="text-gray-400 text-sm text-center">清算路徑會在這裡顯示</p>';
+                 return;
+            }
+
+            const memberBalances = calculateBalances();
+            // compute and render trip total (TWD)
+            let tripTotalTWD = 0;
+            const currentTripExpenses = expenses.filter(exp => exp.tripId === currentTripId);
+            currentTripExpenses.forEach(exp => {
+              tripTotalTWD += convertExpenseToTWD(exp);
+            });
+            const totalEl = document.getElementById('trip-total-twd');
+            if (totalEl) totalEl.textContent = formatAmount(Math.round(tripTotalTWD), 0);
+            const totalLabel = document.getElementById('trip-total-label');
+            if (totalLabel) {
+              const t = trips.find(x => x.id === currentTripId);
+              totalLabel.textContent = (t ? t.name : '此行程') + '總花費 (TWD):';
+            }
+
+            // render per-member should-spend chips
+            const badgesEl = document.getElementById('should-spend-badges');
+            if (badgesEl) {
+              badgesEl.innerHTML = '';
+              const entries = Array.from(memberBalances.entries());
+              entries.forEach(([member, data]) => {
+                const val = Math.round(data.spent || 0);
+                const chip = document.createElement('span');
+                chip.className = 'inline-flex items-center px-3 py-1 rounded-full bg-indigo-600 text-sm';
+                chip.textContent = member + ': ' + formatAmount(val, 0);
+                badgesEl.appendChild(chip);
+              });
+            }
+
+            // 5. 渲染結算總覽
+            settlementListEl.innerHTML = '';
+            memberBalances.forEach((balanceData, member) => {
+                const status = balanceData.net;
+                let statusText;
+                let statusClass;
+
+                // 淨餘額四捨五入到整數位，用於顯示
+                const roundedStatus = Math.round(status);
+                const paidRounded = Math.round(balanceData.paid);
+                const spentRounded = Math.round(balanceData.spent);
+
+                if (Math.abs(status) < 0.5) { // 使用 0.5 TWD 容忍度
+                    statusText = '平衡';
+                    statusClass = 'bg-gray-400 text-white';
+                } else if (status > 0) {
+                    statusText = `應收 ${formatAmount(roundedStatus, 0)}`;
+                    statusClass = 'bg-green-500 text-white';
+                } else {
+                    statusText = `應付 ${formatAmount(Math.abs(roundedStatus), 0)}`;
+                    statusClass = 'bg-red-500 text-white';
+                }
+
+                const memberItem = document.createElement('div');
+                memberItem.className = 'grid grid-cols-4 text-sm';
+                memberItem.innerHTML = `
+                    <span class="font-medium text-indigo-100">${member}</span>
+                    <div class="text-center text-indigo-200">${formatAmount(paidRounded, 0)}</div>
+                    <div class="text-center text-indigo-200">${formatAmount(spentRounded, 0)}</div>
+                    <div class="text-center font-bold ${statusClass} p-1 rounded">
+                        ${statusText}
+                    </div>
+                `;
+                settlementListEl.appendChild(memberItem);
+            });
+            
+            // 6. 渲染最佳清算路徑
+            const settlements = simplifyDebts(memberBalances);
+            settlementPathEl.innerHTML = '';
+
+            if (settlements.length === 0) {
+                 settlementPathEl.innerHTML = '<p class="text-center text-gray-400">目前無需結算或結算金額過小。</p>';
+            } else {
+                settlements.forEach(s => {
+                    const item = document.createElement('div');
+                    // 清算路徑的金額也四捨五入到整數，讓使用者更容易支付
+                    const roundedAmount = Math.round(s.amount); 
+                    item.className = 'flex items-center justify-center p-2 bg-indigo-500 rounded-lg font-semibold text-sm shadow-md';
+                    item.innerHTML = `
+                        <span class="text-yellow-300 mr-2">${s.from}</span>
+                        <span class="text-white">應付 <span class="text-lg">${formatAmount(roundedAmount, 0)}</span> TWD 給</span>
+                        <span class="text-green-300 ml-2">${s.to}</span>
+                    `;
+                    settlementPathEl.appendChild(item);
+                });
+            }
+        }
+
+
+        // --- 事件處理器 ---
+
+        /**
+         * 新增成員
+         */
+        function addMember() {
+            const name = memberNameInput.value.trim();
+            if (name.length > 0 && !members.includes(name)) {
+                members.push(name);
+                markTripEdited(currentTripId);
+                memberNameInput.value = '';
+                // 新增成員後，讓分攤人預設全選
+                currentSharers = [...members]; 
+                renderMembers();
+            } else if (name.length > 0) {
+                showMessage(`成員 ${name} 已存在。`, 'warning');
+            } else {
+                 showMessage('成員名稱不能為空。', 'warning');
+            }
+        }
+        
+        /**
+         * 移除成員
+         */
+        function removeMember(event, memberName) {
+            event.stopPropagation();
+            
+            // 檢查該成員是否有相關的支出記錄
+            const relatedExpenses = expenses.filter(exp => 
+                exp.tripId === currentTripId && (exp.payer === memberName || exp.sharers.includes(memberName))
+            );
+            
+            if (relatedExpenses.length > 0) {
+                // 有相關支出，顯示確認對話框
+                showConfirmDialog(memberName, relatedExpenses.length);
+            } else {
+                // 沒有相關支出，直接刪除
+                executeRemoveMember(memberName, false);
+            }
+        }
+
+        /**
+         * 執行實際的成員刪除操作
+         * @param {string} memberName 要刪除的成員名稱
+         * @param {boolean} removeRelatedExpenses 是否刪除相關支出記錄
+         */
+        function executeRemoveMember(memberName, removeRelatedExpenses) {
+            // 1. 移除成員
+            members = members.filter(m => m !== memberName);
+            
+            if (removeRelatedExpenses) {
+                // 2a. 刪除所有相關支出記錄
+                expenses = expenses.filter(exp => 
+                    exp.payer !== memberName && !exp.sharers.includes(memberName)
+                );
+            } else {
+                // 2b. 保留支出記錄，但處理該成員的參與
+                expenses = expenses.map(exp => {
+                    // 移除分攤人
+                    exp.sharers = exp.sharers.filter(s => s !== memberName);
+                    
+                    // 如果付款人是該成員，改為第一個可用成員
+                    if (exp.payer === memberName && exp.sharers.length > 0) {
+                        exp.payer = exp.sharers[0];
+                    }
+                    
+                    return exp;
+                }).filter(exp => 
+                    // 如果付款人被移除且沒有分攤人，則移除該支出記錄
+                    exp.payer !== memberName && exp.sharers.length > 0
+                );
+            }
+            
+            // 3. 移除付款人和分攤人狀態中的該成員
+            if (currentPayer === memberName) currentPayer = members.length > 0 ? members[0] : null;
+            currentSharers = currentSharers.filter(s => s !== memberName);
+
+            // 4. 重新渲染所有相關元素並儲存
+            renderMembers();
+            renderExpenses();
+            renderTrips(); // ⬅️ 新增這行：當支出被移除或變動時，更新各行程筆數
+            calculateAndRenderSettlement();
+            markTripEdited(currentTripId);
+            saveAllData();
+            
+            // 5. 顯示成功訊息
+            const action = removeRelatedExpenses ? '並刪除相關支出記錄' : '（保留支出記錄）';
+            showMessage(`成員 "${memberName}" 已刪除${action}`, 'success');
+            
+            // 6. 隱藏確認對話框
+            hideConfirmDialog();
+        }
+
+        /**
+         * 選擇付款人
+         */
+        function selectPayer(member) {
+            currentPayer = member;
+            renderPayerChips();
+            updateAddExpenseButtonState();
+        }
+
+        /**
+         * 切換分攤人狀態
+         */
+        function toggleSharer(member) {
+            const index = currentSharers.indexOf(member);
+            if (index > -1) {
+                currentSharers.splice(index, 1);
+            } else {
+                currentSharers.push(member);
+            }
+            renderShareChips();
+            updateAddExpenseButtonState();
+        }
+        
+        /**
+         * 切換全選/取消全選分攤人
+         */
+        function toggleSelectAllSharers() {
+            if (members.length === 0) {
+                showMessage('請先新增成員才能選擇分攤人。', 'warning');
+                return;
+            }
+            
+            if (currentSharers.length === members.length) {
+                // 取消全選
+                currentSharers = [];
+            } else {
+                // 全選
+                currentSharers = [...members];
+            }
+            renderShareChips();
+            updateAddExpenseButtonState();
+        }
+
+
+        /**
+         * 新增支出
+         */
+        function addExpense() {
+            const description = expenseDescriptionInput.value.trim();
+            const amount = parseFloat(expenseAmountInput.value);
+            const currency = expenseCurrencySelect.value;
+
+            if (!currentTripId) { showMessage('請先新增行程。', 'error'); return; }
+            if (!currentPayer) { showMessage('請選擇付款人。', 'error'); return; }
+            if (currentSharers.length === 0) { showMessage('請選擇分攤人。', 'error'); return; }
+            if (amount <= 0 || isNaN(amount)) { showMessage('金額必須大於零。', 'error'); return; }
+            if (description.length === 0) { showMessage('請輸入支出描述。', 'error'); return; }
+            if (!exchangeRates[currency] && currency !== 'TWD') { 
+                showMessage(`請先在設定中輸入 ${currency} 的匯率。`, 'error'); 
+                return;
+            }
+
+            const newExpense = {
+                description,
+                amount,
+                currency, 
+                category: currentCategory, 
+                payer: currentPayer,
+                sharers: [...currentSharers], // 複製陣列
+                tripId: currentTripId, // 添加行程 ID
+                createdAt: new Date().toISOString(),
+                // 添加自定義分攤資訊
+                customSplit: isCustomSplitMode ? { ...customSplitAmounts } : null
+            };
+
+            // 若啟用自定義分攤，直接讀取輸入值覆蓋 customSplit
+            if (isCustomSplitMode) {
+                const map = collectCustomSplitFromInputs();
+                if (Object.keys(map).length > 0) {
+                    newExpense.customSplit = map;
+                }
+            }
+
+            // 確保存在建立時間
+            newExpense.createdAt = newExpense.createdAt || Date.now();
+
+            // 於建立時保存匯率，避免之後刷新影響舊資料
+            newExpense.rateAtCreation = (newExpense.currency === 'TWD') ? 1 : (exchangeRates[newExpense.currency] || 0);
+
+            expenses.push(newExpense);
+            /* reset custom split state after a successful add */
+            isCustomSplitMode = false;
+            customSplitSection.classList.add('hidden');
+            customSplitAmounts = {};
+            if (customSplitInputs) customSplitInputs.innerHTML = '';
+            console.log('新增支出成功:', newExpense);
+            markTripEdited(currentTripId);
+            // 清空輸入
+            expenseDescriptionInput.value = '';
+            expenseAmountInput.value = '';
+            // 重設分攤人為全選狀態 (依據需求)
+            currentSharers = [...members]; 
+
+            // 重新渲染並儲存
+            renderPayerChips(); // 付款人保持不變
+            renderShareChips(); 
+            renderExpenses();
+            renderTrips(); // ⬅️ 新增這行：同步更新「當前行程」與歷史行程下拉的筆數
+            updateAddExpenseButtonState();
+            saveAllData();
+            showMessage('成功新增支出！', 'success');
+        }
+        
+        /**
+         * 移除支出
+         */
+        function removeExpense(index) {
+            if (index >= 0 && index < expenses.length) {
+                expenses.splice(index, 1);
+                renderExpenses();
+                renderTrips(); // ⬅️ 新增
+                calculateAndRenderSettlement();
+                saveAllData(); // 儲存資料
+                showMessage('支出記錄已刪除。', 'success');
+            }
+        }
+
+
+        // --- 啟動與事件監聽 (包裹在 DOMContentLoaded 確保初始化成功) ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // 1. DOM 元素初始化
+            memberNameInput = document.getElementById('member-name-input');
+            addMemberBtn = document.getElementById('add-member-btn');
+            memberListEl = document.getElementById('member-list');
+            memberCountEl = document.getElementById('member-count');
+
+            expenseDescriptionInput = document.getElementById('expense-description');
+            expenseAmountInput = document.getElementById('expense-amount');
+            expenseCurrencySelect = document.getElementById('expense-currency'); 
+            categoryChipsEl = document.getElementById('category-chips'); 
+
+            payerChipsEl = document.getElementById('payer-chips');
+            shareChipsEl = document.getElementById('share-chips');
+            selectAllSharersBtn = document.getElementById('select-all-sharers');
+            addExpenseBtn = document.getElementById('add-expense-btn');
+
+            expensesListEl = document.getElementById('expenses-list');
+            settlementListEl = document.getElementById('settlement-list');
+            settlementPathEl = document.getElementById('settlement-path');
+            
+            exchangeRateInputsEl = document.getElementById('exchange-rate-inputs'); 
+            // 移除了 fetchRatesBtn
+            rateLastUpdatedEl = document.getElementById('rate-last-updated'); 
+            messageBoxEl = document.getElementById('message-box');
+            messageContentEl = document.getElementById('message-content');
+
+            settingsContentEl = document.getElementById('settings-content');
+            toggleSettingsBtn = document.getElementById('toggle-settings-btn');
+            toggleIconEl = document.getElementById('toggle-icon');
+
+            // 確認對話框元素
+            confirmDialogEl = document.getElementById('confirm-dialog');
+            confirmTitleEl = document.getElementById('confirm-title');
+            confirmMessageEl = document.getElementById('confirm-message');
+            confirmCancelBtn = document.getElementById('confirm-cancel');
+            confirmKeepExpensesBtn = document.getElementById('confirm-keep-expenses');
+            confirmDeleteExpensesBtn = document.getElementById('confirm-delete-expenses');
+
+            // 行程管理元素
+            tripNameInput = document.getElementById('trip-name-input');
+            addTripBtn = document.getElementById('add-trip-btn');
+            tripListEl = document.getElementById('trip-list');
+            currentTripNameEl = document.getElementById('current-trip-name');
+            currentTripStatsEl = document.getElementById('current-trip-stats');
+            tripSelectEl = document.getElementById('trip-select');
+
+
+            // 自定義分攤元素
+            customSplitBtn = document.getElementById('custom-split-btn');
+            customSplitSection = document.getElementById('custom-split-section');
+            customSplitInputs = document.getElementById('custom-split-inputs');
+            splitTotalEl = document.getElementById('split-total');
+            applyCustomSplitBtn = document.getElementById('apply-custom-split');
+
+            // 2. 載入 Local Storage 資料
+            loadAllData();
+
+            /* keep settings collapsed by default; user can open via header button */
+            isSettingsOpen = false;
+            settingsContentEl.classList.remove('max-h-[70vh]', 'md:max-h-[80vh]', 'pt-4', 'border-t', 'border-gray-200');
+            settingsContentEl.classList.add('max-h-0');
+            toggleIconEl.classList.remove('rotate-180');
+            toggleIconEl.classList.add('rotate-0');
+
+            /* 2.2 強制切到「最後一次編輯/當前行程」，同步顯示付款人、分攤人、支出與歷史行程 */
+            if (currentTripId && trips.some(t => t.id === currentTripId)) {
+              switchToTrip(currentTripId);
+            } else if (trips.length > 0) {
+              switchToTrip(trips[0].id);
+            }
+            updateHeaderTripName();
+
+            // 3. 設置事件監聽器
+            addMemberBtn.addEventListener('click', addMember);
+            memberNameInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') addMember();
+            });
+            
+            addExpenseBtn.addEventListener('click', addExpense);
+            selectAllSharersBtn.addEventListener('click', toggleSelectAllSharers); 
+            // 移除了 fetchRatesBtn.addEventListener('click', fetchRatesFromAPI);
+            
+            toggleSettingsBtn.addEventListener('click', toggleSettings); 
+
+            expenseAmountInput.addEventListener('input', updateAddExpenseButtonState);
+            expenseDescriptionInput.addEventListener('input', updateAddExpenseButtonState);
+            expenseCurrencySelect.addEventListener('change', updateAddExpenseButtonState);
+
+            // 行程管理事件監聽器
+            addTripBtn.addEventListener('click', addTrip);
+            tripNameInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') addTrip();
+            });
+            tripSelectEl.addEventListener('change', (e) => {
+                const selectedId = e.target.value;
+                if (selectedId) switchToTrip(selectedId);
+            });
+
+            // 匯出事件（Excel）
+            const exportExcelBtn = document.getElementById('export-excel-btn');
+            if (exportExcelBtn) {
+                exportExcelBtn.addEventListener('click', exportTripToExcel);
+            }
+
+            // 匯率刷新按鈕
+            const refreshRatesBtn = document.getElementById('refresh-rates-btn');
+            if (refreshRatesBtn) {
+                refreshRatesBtn.addEventListener('click', () => {
+                    const baseSel = document.getElementById('base-currency-select');
+                    const base = baseSel && baseSel.value ? baseSel.value : 'TWD';
+                    fetchLiveRates(base);
+                });
+            }
+            const addCurrencyBtn = document.getElementById('add-currency-btn');
+            if (addCurrencyBtn) addCurrencyBtn.addEventListener('click', addCurrency);
+            const ratesTsEl = document.getElementById('rates-updated-at');
+            if (ratesTsEl) {
+                const ts = getStoredRateUpdatedAt();
+                if (ts) ratesTsEl.textContent = 'Updated: ' + new Date(ts).toLocaleString('zh-TW');
+            }
+
+            // 雲端同步控制元件 (Link / Cancel)
+            const codeInput = document.getElementById('trip-code-input');
+            const btnLink = document.getElementById('cloud-link');
+            const btnCancel = document.getElementById('cloud-cancel');
+            if (btnLink) btnLink.addEventListener('click', async () => {
+              const code = (codeInput && codeInput.value || '').trim();
+              try { btnLink.disabled = true; await linkToTripCode(code); }
+              finally { btnLink.disabled = false; }
+            });
+            if (btnCancel) btnCancel.addEventListener('click', () => {
+              showConfirmDialogGeneric(
+                '取消同步確認',
+                '取消同步後，你的畫面會立即複製為一個新的本機行程，並停止接收他人變更。',
+                null,
+                () => { cancelSync(); }
+              );
+              const keepBtn = document.getElementById('confirm-keep-expenses');
+              const delBtn = document.getElementById('confirm-delete-expenses');
+              if (keepBtn) keepBtn.textContent = '先不要';
+              if (delBtn) delBtn.textContent = '取消同步';
+            });
+
+            // 自定義分攤事件監聽器
+            customSplitBtn.addEventListener('click', toggleCustomSplitMode);
+            applyCustomSplitBtn.addEventListener('click', applyCustomSplit);
+            expenseAmountInput.addEventListener('input', () => {
+                if (isCustomSplitMode) {
+                    updateSplitTotal();
+                    autofillLastEmptyIfApplicable();
+                }
+            });
+            expenseCurrencySelect.addEventListener('change', () => {
+                if (isCustomSplitMode) {
+                    renderCustomSplitInputs();
+                }
+            });
+
+            // 確認對話框事件監聽器
+            confirmCancelBtn.addEventListener('click', hideConfirmDialog);
+            confirmKeepExpensesBtn.addEventListener('click', () => {
+                if (typeof confirmKeepHandler === 'function') {
+                    const fn = confirmKeepHandler; // 防止重入
+                    confirmKeepHandler = null; confirmDeleteHandler = null;
+                    fn();
+                } else if (pendingMemberName) {
+                    executeRemoveMember(pendingMemberName, false);
+                }
+            });
+            confirmDeleteExpensesBtn.addEventListener('click', () => {
+                if (typeof confirmDeleteHandler === 'function') {
+                    const fn = confirmDeleteHandler; // 防止重入
+                    confirmKeepHandler = null; confirmDeleteHandler = null;
+                    fn();
+                } else if (pendingMemberName) {
+                    executeRemoveMember(pendingMemberName, true);
+                }
+            });
+
+            // 4. 初始化渲染：確保所有區塊正確顯示
+            renderCategoryChips(); 
+            renderExchangeRateInputs(); 
+            // Optional: stamp missing rateAtCreation for old expenses once
+            backfillRateAtCreationIfMissing();
+            
+            // 強制渲染所有區塊，確保畫面顯示正確
+            renderTrips();
+            renderMembers();
+            renderPayerChips();
+            renderShareChips();
+            renderExpenses();
+            calculateAndRenderSettlement();
+            updateAddExpenseButtonState();
+
+            // 動態更新標題副標示目前行程名稱
+            updateHeaderTripName();
+
+            console.log('初始化完成，當前狀態:', {
+                trips: trips.length,
+                currentTripId: currentTripId,
+                members: members.length,
+                expenses: expenses.length
+            });
+        });
+        
+    </script>
+</body>
+</html>
