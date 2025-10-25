@@ -1010,6 +1010,7 @@
           const s1 = wb.addWorksheet('Expenses');
           const head1 = ['Description','Category','Amount','Currency','Payer','Sharers','CustomSplit','CreatedAt','RateUsed','TWD (approx)'];
           s1.addRow(head1);
+          console.log('[Excel Export] header:', head1);
           head1.forEach((_, i)=>{ const c = s1.getRow(1).getCell(i+1); c.font={bold:true,color:{argb:'FFFFFFFF'}}; c.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FF4F46E5'}}; });
 
           tripExpenses.forEach(exp => {
@@ -1023,6 +1024,7 @@
               ? exp.rateAtCreation
               : ((exp.currency && exchangeRates && exchangeRates[exp.currency] != null) ? exchangeRates[exp.currency] : 1);
 
+            console.log('[Excel Export] rateUsed for row:', rateUsed);
             s1.addRow([
               exp.description || '',
               exp.category || '',
@@ -1101,8 +1103,9 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             const stamp = new Date().toISOString().replace(/[:.]/g,'-');
+            const EXPORT_SCHEMA_VERSION = 'v-rateUsed';
             a.href = url;
-            a.download = `${trip.name || 'trip'}-${stamp}.xlsx`;
+            a.download = `${trip.name || 'trip'}-${EXPORT_SCHEMA_VERSION}-${stamp}.xlsx`;
             document.body.appendChild(a); a.click(); document.body.removeChild(a);
             URL.revokeObjectURL(url);
             showMessage('Excel exported with summary.', 'success');
@@ -2614,8 +2617,10 @@
             // 確保存在建立時間
             newExpense.createdAt = newExpense.createdAt || Date.now();
 
-            // 於建立時保存匯率，避免之後刷新影響舊資料
-            newExpense.rateAtCreation = (newExpense.currency === 'TWD') ? 1 : (exchangeRates[newExpense.currency] || 0);
+            // 於建立時保存匯率，避免之後刷新影響舊資料（若無則以 1 作為保險值）
+            newExpense.rateAtCreation = (exchangeRates && exchangeRates[newExpense.currency] != null)
+                ? exchangeRates[newExpense.currency]
+                : 1;
 
             expenses.push(newExpense);
             /* reset custom split state after a successful add */
