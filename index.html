@@ -437,6 +437,52 @@
         function getSyncedId() { return localStorage.getItem('travel_synced_trip_id') || ''; }
         function setSyncedId(v) { if (v) localStorage.setItem('travel_synced_trip_id', v); else localStorage.removeItem('travel_synced_trip_id'); }
 
+        // Helper: validate trip code pattern
+        function looksLikeTripCode(s) {
+          return typeof s === 'string' && s.trim().length >= 16;
+        }
+
+        // Auto resume cloud sync on load (URL ?code has priority)
+        async function autoResumeCloudOnLoad() {
+          try {
+            if (!db) db = await ensureDbReady();
+          } catch (e) {
+            console.warn('ensureDbReady failed, skip auto resume:', e);
+            return;
+          }
+          const url = new URL(window.location.href);
+          const urlCode = (url.searchParams.get('code') || '').trim();
+          const prevCode = (getSyncedId() || '').trim();
+          const code = urlCode || prevCode;
+          if (!code || !looksLikeTripCode(code)) return;
+          try {
+            if (syncedTripId === code) {
+              await subscribeTrip(code);
+              setCloudStatus('已同步：' + code);
+              const input = document.getElementById('trip-code-input');
+              if (input) input.value = code;
+              return;
+            }
+            const hasAnyLocal = !!localStorage.getItem('travel_trips') || !!localStorage.getItem('travel_expenses');
+            if (!hasAnyLocal) {
+              await hydrateLocalFromCloud(code);
+              syncedTripId = code;
+              setSyncedId(code);
+              setCloudStatus('已同步：' + code);
+              await subscribeTrip(code);
+            } else {
+              syncedTripId = code;
+              setSyncedId(code);
+              setCloudStatus('已同步：' + code);
+              await subscribeTrip(code);
+            }
+            const input2 = document.getElementById('trip-code-input');
+            if (input2) input2.value = code;
+          } catch(e) {
+            console.warn('autoResumeCloudOnLoad failed:', e);
+          }
+        }
+
         // Ensure Firestore is initialized before use
         async function ensureDbReady() {
           if (window.db) return window.db;
@@ -2965,28 +3011,20 @@
                 if (ts) ratesTsEl.textContent = 'Updated: ' + new Date(ts).toLocaleString('zh-TW');
             }
 
-            // --- Auto-link: restore previous synced trip id or URL ?code=...
-            (async () => {
-              try {
-                const prev = getSyncedId && getSyncedId();
-                const url = new URL(window.location.href);
-                const urlCode = url.searchParams.get('code');
-                const code = (urlCode && urlCode.trim()) || (prev && prev.trim()) || '';
+            // Auto resume cloud sync without pressing "Link"
+            autoResumeCloudOnLoad();
 
-                if (code) {
-                  if (!syncedTripId || syncedTripId !== code) {
-                    await linkToTripCode(code);
-                  } else {
-                    if (!db) db = await ensureDbReady();
-                    await subscribeTrip(code);
-                  }
-                  const input = document.getElementById('trip-code-input');
-                  if (input) input.value = code;
+            // Re-attach subscription when window regains focus (mobile helpful)
+            window.addEventListener('focus', async () => {
+              try {
+                const code = getSyncedId();
+                if (looksLikeTripCode(code)) {
+                  if (!db) db = await ensureDbReady();
+                  if (syncedTripId !== code) { syncedTripId = code; setCloudStatus('已同步：' + code); }
+                  await subscribeTrip(code);
                 }
-              } catch (e) {
-                console.warn('Auto-link on load failed:', e);
-              }
-            })();
+              } catch (e) { console.warn('auto-resubscribe on focus failed:', e); }
+            });
 
             // 雲端同步控制元件 (Link / Cancel)
             const codeInput = document.getElementById('trip-code-input');
@@ -2995,7 +3033,6 @@
 
             // --- Auto-link on input (debounced) and on Enter ---
             let codeDebounce = null;
-            function looksLikeTripCode(s) { return typeof s === 'string' && s.trim().length >= 16; }
 
             if (codeInput) {
               codeInput.addEventListener('input', () => {
