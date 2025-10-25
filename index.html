@@ -821,6 +821,7 @@
           unsubs.push(
             expRef.onSnapshot(snap => {
               if (isSyncingToCloud) return;
+              console.log('[Cloud] expenses snapshot size:', snap.size, 'trip:', tripId);
               isUpdatingFromCloud = true;
               const list = snap.docs.map(d => ({ id: d.id, tripId, ...(d.data() || {}) }));
               expenses = list;
@@ -882,10 +883,14 @@
             }
 
             // Expenses: upsert by id (create if missing); delete extras only if we have locals
+            // Build a set of remote ids to avoid re-creating with new ids
+            const remoteIds = new Set(remoteExpSnap.docs.map(d => d.id));
             localExp.forEach(e => {
-              const id = e.id || db.collection('_').doc().id;
-              const ref = expRef.doc(id);
-              const payload = Object.assign({}, e, { id, updatedAt: new Date().toISOString() });
+              const chosenId = (e.id && typeof e.id === 'string')
+                ? e.id
+                : (remoteIds.has(e.id) ? e.id : db.collection('_').doc().id);
+              const ref = expRef.doc(chosenId);
+              const payload = Object.assign({}, e, { id: chosenId, updatedAt: new Date().toISOString() });
               batch.set(ref, payload, { merge: true });
             });
             if (localExp.length > 0) {
@@ -1661,6 +1666,16 @@
             // Auto-fill cloud code input with current trip id
             const codeInput = document.getElementById('trip-code-input');
             if (codeInput) codeInput.value = tripId || '';
+
+            // If this trip is the cloud-linked one, ensure we are subscribed
+            (async () => {
+              try {
+                if (syncedTripId && tripId === syncedTripId) {
+                  if (!db) db = await ensureDbReady();
+                  await subscribeTrip(syncedTripId);
+                }
+              } catch (e) { console.warn('Auto-subscribe on switch failed:', e); }
+            })();
         }
 
         /**
@@ -2613,7 +2628,7 @@
         /**
          * 新增支出
          */
-        function addExpense() {
+        async function addExpense() {
             const description = expenseDescriptionInput.value.trim();
             const amount = parseFloat(expenseAmountInput.value);
             const currency = expenseCurrencySelect.value;
@@ -2657,6 +2672,24 @@
                 ? exchangeRates[newExpense.currency]
                 : 1;
 
+            // If cloud-linked, write-through to Firestore first, get a stable id
+            if (syncedTripId && db) {
+              try {
+                const expRef = db.collection('trips').doc(syncedTripId).collection('expenses');
+                const newId = db.collection('_').doc().id; // pre-generate id
+                newExpense.id = newId; // attach the id locally now
+                const payload = Object.assign({}, newExpense, {
+                  updatedAt: new Date().toISOString(),
+                  updatedBy: 'web'
+                });
+                await expRef.doc(newId).set(payload, { merge: true });
+                // After successful cloud write, proceed to push to local
+              } catch (e) {
+                console.error('Cloud write-through failed, fallback to local only:', e);
+                // If failed, keep local flow; mirrorLocalToCloud will try later
+              }
+            }
+
             expenses.push(newExpense);
             // Ensure subsequent save mirrors to cloud (do not skip due to a recent hydrate)
             justHydratedFromCloud = false;
@@ -2681,6 +2714,7 @@
             updateAddExpenseButtonState();
             saveAllData();
             showMessage('成功新增支出！', 'success');
+            if (syncedTripId) console.log('[Cloud] write-through added expense id:', newExpense.id, 'to trip:', syncedTripId);
         }
         
         /**
