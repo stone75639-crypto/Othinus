@@ -193,7 +193,7 @@
         </div>
 
         <!-- 4. 成員管理卡片 (視為設定) - 支援收合功能 -->
-        <div id="member-management-card" class="bg-white card rounded-xl p-6 shadow-lg">
+        <div id="member-management-card" class="bg-white card rounded-xl p-6 shadow-lg min-w-0 break-words">
             <!-- Clickable Header Button -->
             <button id="toggle-settings-btn" class="w-full flex justify-between items-center text-left -mt-2">
                 <h2 class="text-2xl font-bold text-gray-700 flex items-center">
@@ -207,7 +207,7 @@
             </button>
             
             <!-- Collapsible Content Wrapper (初始狀態：max-h-0 收合) -->
-            <div id="settings-content" class="overflow-hidden transition-all duration-300 max-h-0 overflow-y-auto">
+            <div id="settings-content" class="overflow-hidden transition-all duration-300 max-h-0 overflow-y-auto w-full px-2 sm:px-3">
                 
                 <!-- 成員新增 -->
                 <div class="flex space-x-2 mb-4 pt-4">
@@ -224,7 +224,7 @@
                 </div>
                 
                 <!-- 行程管理 -->
-                <div class="mt-6 border-t pt-4">
+                <div class="mt-6 border-t pt-4 min-w-0 break-words">
                     <h3 class="text-xl font-bold text-gray-700 mb-3">行程管理</h3>
                     
                     <!-- 當前行程顯示 -->
@@ -282,11 +282,11 @@
                     
                     <p class="text-gray-500 text-xs mb-3">請手動輸入您所需的參考匯率，基準幣別為 TWD。</p>
 
-                    <div class="mb-2 flex items-center gap-2">
+                    <div class="mb-2 flex flex-wrap items-center gap-2">
                         <button id="refresh-rates-btn" class="px-3 py-1 bg-gray-700 text-white rounded">Refresh rates</button>
                         <span id="rates-updated-at" class="text-xs text-gray-500"></span>
                     </div>
-                    <div class="mb-2 flex items-center gap-2">
+                    <div class="mb-2 flex flex-wrap items-center gap-2">
                         <input type="text" id="new-currency-input" placeholder="Add currency (e.g. SGD)" maxlength="5" class="flex-1 p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm">
                         <button id="add-currency-btn" class="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700">Add</button>
                     </div>
@@ -757,22 +757,71 @@
         async function subscribeTrip(tripId) {
           if (!db) db = await ensureDbReady();
           if (!db) { showMessage('Cloud not initialized', 'error'); return; }
-          // cancel existing listener
-          if (unsubscribeTrip) { unsubscribeTrip(); unsubscribeTrip = null; }
-          if (unsubscribeCloud) { unsubscribeCloud(); unsubscribeCloud = null; }
-          // Trip doc only: pause writes while applying cloud updates
-          unsubscribeTrip = db.collection('trips').doc(tripId).onSnapshot(async (doc) => {
-            if (!doc.exists) return;
-            if (isSyncingToCloud) return; // skip self-triggered updates
-            try {
+          // Detach previous listeners if any
+          if (unsubscribeCloud) { try { unsubscribeCloud(); } catch(_) {} unsubscribeCloud = null; }
+
+          const tripRef = db.collection('trips').doc(tripId);
+          const memRef  = tripRef.collection('members');
+          const expRef  = tripRef.collection('expenses');
+
+          const unsubs = [];
+
+          // Trip doc updates: name and exchangeRates
+          unsubs.push(
+            tripRef.onSnapshot(doc => {
+              if (!doc.exists) return;
+              if (isSyncingToCloud) return;
               isUpdatingFromCloud = true;
-              console.log('🔵 Cloud → Local update detected');
-              await hydrateLocalFromCloud(tripId);
-              console.log('Cloud update applied');
-            } finally {
+              const data = doc.data() || {};
+              const idx = trips.findIndex(t => t.id === currentTripId);
+              if (idx >= 0 && data.name) {
+                trips[idx].name = data.name;
+                localStorage.setItem('travel_trips', JSON.stringify(trips));
+                updateHeaderTripName();
+                renderTrips();
+              }
+              if (data.exchangeRates) {
+                exchangeRates = data.exchangeRates;
+                localStorage.setItem('travel_rates', JSON.stringify(exchangeRates));
+                if (typeof renderExchangeRateInputs === 'function') renderExchangeRateInputs();
+              }
               isUpdatingFromCloud = false;
-            }
-          });
+            })
+          );
+
+          // Members subcollection
+          unsubs.push(
+            memRef.onSnapshot(snap => {
+              if (isSyncingToCloud) return;
+              isUpdatingFromCloud = true;
+              members = snap.docs.map(d => {
+                const v = d.data();
+                return (v && v.name) ? v.name : d.id;
+              });
+              localStorage.setItem('travel_members', JSON.stringify(members));
+              renderMembers();
+              if (typeof renderPayerChips === 'function') renderPayerChips();
+              if (typeof renderShareChips === 'function') renderShareChips();
+              isUpdatingFromCloud = false;
+            })
+          );
+
+          // Expenses subcollection
+          unsubs.push(
+            expRef.onSnapshot(snap => {
+              if (isSyncingToCloud) return;
+              isUpdatingFromCloud = true;
+              const list = snap.docs.map(d => ({ id: d.id, tripId, ...(d.data() || {}) }));
+              expenses = list;
+              localStorage.setItem('travel_expenses', JSON.stringify(expenses));
+              renderExpenses();
+              calculateAndRenderSettlement();
+              isUpdatingFromCloud = false;
+            })
+          );
+
+          // Group unsubscribe
+          unsubscribeCloud = () => { unsubs.forEach(u => { try { u(); } catch(_) {} }); };
         }
 
         // mirror local -> cloud (overwrite members & expenses for current trip)
@@ -919,7 +968,7 @@
                 showMessage("資料儲存失敗，請檢查瀏覽器設定。", 'error');
             }
             // auto-mirror to cloud when linked
-            if (syncedTripId && db) {
+            if (syncedTripId && db && !isUpdatingFromCloud) {
               // fire-and-forget; do not block UI
               mirrorLocalToCloud(syncedTripId).catch((e) => console.warn('mirror failed:', e));
             }
@@ -1261,18 +1310,18 @@
             const entries = Object.entries(exchangeRates);
             entries.forEach(([code, rate]) => {
                 const row = document.createElement('div');
-                row.className = 'flex items-center gap-2 mb-2';
+                row.className = 'flex flex-col sm:flex-row items-start sm:items-center gap-2 mb-3 sm:mb-2 w-full';
 
                 const label = document.createElement('label');
                 label.textContent = code;
-                label.className = 'w-16 font-medium text-gray-700';
+                label.className = 'sm:w-16 w-full font-medium text-gray-700 break-words';
 
                 const input = document.createElement('input');
                 input.type = 'number';
                 input.value = rate || 0;
                 input.min = '0';
                 input.step = '0.0001';
-                input.className = 'flex-1 p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm';
+                input.className = 'w-full sm:flex-1 p-2 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 text-sm min-w-0';
                 input.addEventListener('input', () => {
                     const val = parseFloat(input.value);
                     if (!isNaN(val)) {
@@ -1287,7 +1336,7 @@
                     delBtn = document.createElement('button');
                     delBtn.textContent = '✕';
                     delBtn.title = 'Delete ' + code;
-                    delBtn.className = 'px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700 text-xs';
+                    delBtn.className = 'px-2 py-1 bg-red-600 text-white rounded hover:bg-red-700 text-xs mt-1 sm:mt-0';
                     delBtn.addEventListener('click', () => {
                         if (confirm('Remove ' + code + ' from currency list?')) {
                             delete exchangeRates[code];
