@@ -396,6 +396,38 @@
         let unsubscribeTrip = null;   // to detach trip-level listener
         let justHydratedFromCloud = false; // skip one mirror after a fresh hydrate
 
+        // ---- Device identity (stable per browser) ----
+        const DEVICE_ID_KEY = 'travel_device_id';
+        const DEVICE_NAME_KEY = 'travel_device_name';
+
+        function genId(len = 12) {
+          const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+          let out = ''; for (let i=0;i<len;i++) out += chars[Math.floor(Math.random()*chars.length)];
+          return out;
+        }
+        function detectDeviceBaseName() {
+          const ua = navigator.userAgent || '';
+          if (/iPhone|iPad|iPod/i.test(ua)) return 'iOS';
+          if (/Android/i.test(ua)) return 'Android';
+          if (/Macintosh|Mac OS X/i.test(ua)) return 'Mac';
+          if (/Windows/i.test(ua)) return 'Windows';
+          if (/Linux/i.test(ua)) return 'Linux';
+          return 'Web';
+        }
+        function ensureDeviceIdentity() {
+          let id = localStorage.getItem(DEVICE_ID_KEY);
+          if (!id) { id = genId(16); localStorage.setItem(DEVICE_ID_KEY, id); }
+          let name = localStorage.getItem(DEVICE_NAME_KEY);
+          if (!name) {
+            const base = detectDeviceBaseName();
+            const suffix = id.slice(-4);
+            name = `${base}-${suffix}`;
+            localStorage.setItem(DEVICE_NAME_KEY, name);
+          }
+          return { id, name };
+        }
+        let DEVICE = null;
+
         function getCurrentTripName() {
           const t = trips.find(tt => tt.id === currentTripId);
           return (t && t.name) ? t.name : '未命名行程';
@@ -2199,6 +2231,7 @@
                            ${expense.customSplit ? '<span class="ml-1 text-xs font-medium text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">自定義</span>' : ''}
                         </p>
                         <div class="text-xs text-gray-500">時間: ${ts}</div>
+                        <div class="text-xs text-gray-500">來源裝置: <span class="font-medium">${expense.createdByDeviceName || (expense.createdByDeviceId ? ('Dev-' + String(expense.createdByDeviceId).slice(-4)) : '未知')}</span></div>
                         <p class="text-sm text-gray-500">付款人: <span class="font-medium text-indigo-600">${expense.payer}</span></p>
                         <p class="text-xs text-gray-400 truncate">分攤人: ${sharersText}</p>
                         ${splitDetails}
@@ -2206,7 +2239,7 @@
                     <div class="flex-shrink-0 text-right">
                         <p class="text-lg font-bold text-red-600">${expense.currency} ${formatAmount(expense.amount)}</p>
                         <p class="text-xs text-gray-500">(約 TWD ${formatAmount(twdAmount, 0)})</p>
-                        <button class="text-xs text-red-400 hover:text-red-600 transition-colors" onclick="removeExpense(${expenses.indexOf(expense)})">
+                        <button class="text-xs text-red-400 hover:text-red-600 transition-colors" onclick="removeExpenseById('${expense.id || ''}')">
                             刪除
                         </button>
                     </div>
@@ -2624,7 +2657,6 @@
             updateAddExpenseButtonState();
         }
 
-
         /**
          * 新增支出
          */
@@ -2655,6 +2687,10 @@
                 // 添加自定義分攤資訊
                 customSplit: isCustomSplitMode ? { ...customSplitAmounts } : null
             };
+
+            // tag device info
+            newExpense.createdByDeviceId = DEVICE && DEVICE.id ? DEVICE.id : '';
+            newExpense.createdByDeviceName = DEVICE && DEVICE.name ? DEVICE.name : '';
 
             // 若啟用自定義分攤，直接讀取輸入值覆蓋 customSplit
             if (isCustomSplitMode) {
@@ -2716,17 +2752,43 @@
             showMessage('成功新增支出！', 'success');
             if (syncedTripId) console.log('[Cloud] write-through added expense id:', newExpense.id, 'to trip:', syncedTripId);
         }
+
+        // Real-time delete by id (write-through to Firestore)
+        async function removeExpenseById(id) {
+          try {
+            const idx = expenses.findIndex(e => e.id === id && e.tripId === currentTripId);
+            if (idx === -1) {
+              console.warn('removeExpenseById: local expense not found for id:', id);
+            }
+            if (syncedTripId && db && id) {
+              const ref = db.collection('trips').doc(syncedTripId).collection('expenses').doc(id);
+              try { await ref.delete(); } catch (e) { console.error('Cloud delete failed, will still remove locally:', e); }
+            }
+            expenses = expenses.filter(e => !(e.id === id && e.tripId === currentTripId));
+            renderExpenses();
+            renderTrips();
+            calculateAndRenderSettlement();
+            saveAllData();
+            showMessage('支出記錄已刪除。', 'success');
+          } catch (e) {
+            console.error('removeExpenseById failed:', e);
+            showMessage('刪除失敗：' + (e.message || ''), 'error');
+          }
+        }
         
         /**
          * 移除支出
          */
         function removeExpense(index) {
             if (index >= 0 && index < expenses.length) {
+                const exp = expenses[index];
+                if (exp && exp.id) return removeExpenseById(exp.id);
+                // No id (legacy local-only)
                 expenses.splice(index, 1);
                 renderExpenses();
-                renderTrips(); // ⬅️ 新增
+                renderTrips();
                 calculateAndRenderSettlement();
-                saveAllData(); // 儲存資料
+                saveAllData();
                 showMessage('支出記錄已刪除。', 'success');
             }
         }
@@ -2734,6 +2796,7 @@
 
         // --- 啟動與事件監聽 (包裹在 DOMContentLoaded 確保初始化成功) ---
         document.addEventListener('DOMContentLoaded', () => {
+            DEVICE = ensureDeviceIdentity();
             // 1. DOM 元素初始化
             memberNameInput = document.getElementById('member-name-input');
             addMemberBtn = document.getElementById('add-member-btn');
