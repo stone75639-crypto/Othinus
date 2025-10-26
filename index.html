@@ -442,6 +442,16 @@
           return typeof s === 'string' && s.trim().length >= 16;
         }
 
+        // Per-trip last sync timestamp
+        const LAST_SYNC_PREFIX = 'travel_last_sync_at_';
+        function getLastSyncAt(tripId) {
+          return localStorage.getItem(LAST_SYNC_PREFIX + tripId) || '';
+        }
+        function setLastSyncAt(tripId, iso) {
+          if (!tripId) return;
+          localStorage.setItem(LAST_SYNC_PREFIX + tripId, iso || new Date().toISOString());
+        }
+
         // Ensure UI is viewing the synced trip
         function ensureViewingSyncedTrip() {
           try {
@@ -485,20 +495,30 @@
               if (input) input.value = code;
               return;
             }
-            const hasAnyLocal = !!localStorage.getItem('travel_trips') || !!localStorage.getItem('travel_expenses');
-            if (!hasAnyLocal) {
+            // Decide hydrate or subscribe+mirror based on remote updatedAt vs lastSyncAt
+            const tdoc = await tripDocRef(code).get();
+            const remoteUpdated = (tdoc.exists && (tdoc.data() || {}).updatedAt) ? new Date(tdoc.data().updatedAt) : null;
+            const lastSyncStr = getLastSyncAt(code);
+            const localLastSync = lastSyncStr ? new Date(lastSyncStr) : null;
+
+            if (remoteUpdated && (!localLastSync || remoteUpdated > localLastSync)) {
+              // Remote is newer -> hydrate then subscribe
               await hydrateLocalFromCloud(code);
               syncedTripId = code;
               setSyncedId(code);
               setCloudStatus('已同步：' + code);
               await subscribeTrip(code);
               ensureViewingSyncedTrip();
+              setLastSyncAt(code, new Date().toISOString());
             } else {
+              // Local is as new or newer -> subscribe then mirror
               syncedTripId = code;
               setSyncedId(code);
               setCloudStatus('已同步：' + code);
               await subscribeTrip(code);
               ensureViewingSyncedTrip();
+              try { await mirrorLocalToCloud(code); } catch(_) {}
+              setLastSyncAt(code, new Date().toISOString());
             }
             const input2 = document.getElementById('trip-code-input');
             if (input2) input2.value = code;
@@ -788,7 +808,9 @@
             members = cloudMembers;
             localStorage.setItem('travel_members', JSON.stringify(members));
 
-            const localExps = cloudExpenses.map(x => ({
+            const localExps = cloudExpenses
+              .filter(x => !x.isDeleted)
+              .map(x => ({
               id: x.id,
               tripId: tripId,
               description: x.description || '',
@@ -934,7 +956,9 @@
               console.log('[Cloud] expenses snapshot size:', snap.size, 'trip:', tripId);
               console.log('[Cloud] first doc ids sample:', snap.docs.slice(0,3).map(d => d.id));
               isUpdatingFromCloud = true;
-              const list = snap.docs.map(d => ({ id: d.id, ...(d.data() || {}), tripId }));
+              const list = snap.docs
+                .map(d => ({ id: d.id, ...(d.data() || {}), tripId }))
+                .filter(x => !x.isDeleted);
               expenses = list;
               localStorage.setItem('travel_expenses', JSON.stringify(expenses));
               renderExpenses();
@@ -986,49 +1010,46 @@
 
             const batch = db.batch();
 
-            // Members: upsert locals; delete extraneous only if we have locals
-            const localMemIds = new Set(localMem.map(n => n));
+            // Members: upsert locals; do NOT delete remote extras
             localMem.forEach(n => {
               batch.set(memRef.doc(n), { name: n, updatedAt: new Date().toISOString() }, { merge: true });
             });
-            if (localMem.length > 0) {
-              remoteMemSnap.forEach(d => { if (!localMemIds.has(d.id)) batch.delete(d.ref); });
-            }
 
-            // Expenses: upsert by id (create if missing); delete extras only if we have locals
-            const remoteIds = new Set(remoteExpSnap.docs.map(d => d.id));
+            // Expenses: only upsert when local is newer; never delete remote
+            const remoteMap = new Map();
+            remoteExpSnap.forEach(d => remoteMap.set(d.id, d.data() || {}));
             localExp.forEach(e => {
               const chosenId = (e.id && typeof e.id === 'string') ? e.id : db.collection('_').doc().id;
               const ref = expRef.doc(chosenId);
-              const payload = {
-                id: chosenId,
-                tripId: tripId,
-                description: e.description || '',
-                category: e.category || '',
-                amount: e.amount || 0,
-                currency: e.currency || 'TWD',
-                rateAtCreation: (e.rateAtCreation != null) ? e.rateAtCreation : 1,
-                payer: e.payer || '',
-                sharers: Array.isArray(e.sharers) ? e.sharers : [],
-                customSplit: e.customSplit || null,
-                createdAt: e.createdAt || new Date().toISOString(),
-                createdByDeviceId: e.createdByDeviceId || '',
-                createdByDeviceName: e.createdByDeviceName || '',
-                updatedAt: new Date().toISOString(),
-                updatedBy: (DEVICE && DEVICE.name) ? DEVICE.name : 'web'
-              };
-              // Upsert (merge) to avoid wiping unknown fields from other writers
-              batch.set(ref, payload, { merge: true });
+              const remote = remoteMap.get(chosenId);
+              const localUpdated = new Date(e.updatedAt || 0).getTime();
+              const remoteUpdated = new Date((remote && remote.updatedAt) || 0).getTime();
+              if (!remote || localUpdated > remoteUpdated) {
+                const payload = {
+                  id: chosenId,
+                  tripId: tripId,
+                  description: e.description || '',
+                  category: e.category || '',
+                  amount: e.amount || 0,
+                  currency: e.currency || 'TWD',
+                  rateAtCreation: (e.rateAtCreation != null) ? e.rateAtCreation : 1,
+                  payer: e.payer || '',
+                  sharers: Array.isArray(e.sharers) ? e.sharers : [],
+                  customSplit: e.customSplit || null,
+                  createdAt: e.createdAt || new Date().toISOString(),
+                  createdByDeviceId: e.createdByDeviceId || '',
+                  createdByDeviceName: e.createdByDeviceName || '',
+                  isDeleted: !!e.isDeleted,
+                  deletedAt: e.deletedAt || null,
+                  updatedAt: e.updatedAt || new Date().toISOString(),
+                  updatedBy: (DEVICE && DEVICE.name) ? DEVICE.name : 'web'
+                };
+                batch.set(ref, payload, { merge: true });
+              }
             });
-            if (localExp.length > 0) {
-              remoteExpSnap.forEach(d => {
-                const id = d.id;
-                const existsLocally = localExp.some(le => (le.id || '') === id);
-                if (!existsLocally) batch.delete(d.ref);
-              });
-            }
 
             await batch.commit();
+            setLastSyncAt(tripId, new Date().toISOString());
             console.log('✅ Safe mirror complete');
           } catch (e) {
             console.error('❌ mirrorLocalToCloud failed:', e);
@@ -1043,12 +1064,34 @@
           if (!code) { showMessage('請輸入代碼', 'warning'); return; }
 
           try {
-            await hydrateLocalFromCloud(code);
-            syncedTripId = code;
-            setSyncedId(code);
-            setCloudStatus('已同步：' + code);
-            await subscribeTrip(code);
-            ensureViewingSyncedTrip();
+            // If remote exists, decide hydrate vs subscribe+mirror using updatedAt vs lastSyncAt
+            const tdoc = await tripDocRef(code).get();
+            if (tdoc.exists) {
+              const remoteUpdated = (tdoc.data() || {}).updatedAt ? new Date(tdoc.data().updatedAt) : null;
+              const lastSyncStr = getLastSyncAt(code);
+              const localLastSync = lastSyncStr ? new Date(lastSyncStr) : null;
+
+              if (remoteUpdated && (!localLastSync || remoteUpdated > localLastSync)) {
+                await hydrateLocalFromCloud(code);
+                syncedTripId = code;
+                setSyncedId(code);
+                setCloudStatus('已同步：' + code);
+                await subscribeTrip(code);
+                ensureViewingSyncedTrip();
+                setLastSyncAt(code, new Date().toISOString());
+              } else {
+                syncedTripId = code;
+                setSyncedId(code);
+                setCloudStatus('已同步：' + code);
+                await subscribeTrip(code);
+                ensureViewingSyncedTrip();
+                try { await mirrorLocalToCloud(code); } catch(_) {}
+                setLastSyncAt(code, new Date().toISOString());
+              }
+            } else {
+              // Remote not found -> fall into confirm flow below
+              throw new Error('Trip not found');
+            }
             // Do NOT mirror immediately after a cloud hydrate to avoid overwriting cloud with local empty.
             showMessage('Linked to cloud trip: ' + code, 'success');
           } catch (e) {
@@ -1065,6 +1108,7 @@
                   setCloudStatus('已同步：' + code);
                   await subscribeTrip(code);
                   ensureViewingSyncedTrip();
+                  setLastSyncAt(code, new Date().toISOString());
                   showMessage('Created and linked: ' + code, 'success');
                 } catch (err) {
                   console.error('pushTripToCloud failed:', err);
@@ -2809,8 +2853,10 @@
                 }
             }
 
-            // 確保存在建立時間 (ISO 字串，便於排序)
-            newExpense.createdAt = new Date().toISOString();
+            // 確保存在建立時間/更新時間 (ISO 字串)
+            const nowIso = new Date().toISOString();
+            newExpense.createdAt = nowIso;
+            newExpense.updatedAt = nowIso;
 
             // 於建立時保存匯率，避免之後刷新影響舊資料（若無則以 1 作為保險值）
             newExpense.rateAtCreation = (exchangeRates && exchangeRates[newExpense.currency] != null)
@@ -2824,7 +2870,7 @@
                 const newId = db.collection('_').doc().id; // pre-generate id
                 newExpense.id = newId;
                 const payload = Object.assign({}, newExpense, {
-                  updatedAt: new Date().toISOString(),
+                  updatedAt: nowIso,
                   updatedBy: (DEVICE && DEVICE.name) ? DEVICE.name : 'web'
                 });
                 await expRef.doc(newId).set(payload, { merge: true });
@@ -2896,8 +2942,10 @@
             }
             if (syncedTripId && db && id) {
               const ref = db.collection('trips').doc(syncedTripId).collection('expenses').doc(id);
-              try { await ref.delete(); } catch (e) { console.error('Cloud delete failed, will still remove locally:', e); }
+              const nowIso = new Date().toISOString();
+              try { await ref.set({ isDeleted: true, deletedAt: nowIso, updatedAt: nowIso }, { merge: true }); } catch (e) { console.error('Cloud soft delete failed, will still remove locally:', e); }
             }
+            // Local immediate hide for better UX
             expenses = expenses.filter(e => !(e.id === id && e.tripId === currentTripId));
             renderExpenses();
             renderTrips();
