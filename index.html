@@ -906,7 +906,7 @@
           // Expenses subcollection
           unsubs.push(
             expRef.onSnapshot(snap => {
-              if (snap.metadata && snap.metadata.hasPendingWrites) return;
+              // DO NOT skip pendingWrites here — we want the writer device to see its own write instantly
               console.log('[Cloud] expenses snapshot size:', snap.size, 'trip:', tripId);
               console.log('[Cloud] first doc ids sample:', snap.docs.slice(0,3).map(d => d.id));
               isUpdatingFromCloud = true;
@@ -2810,6 +2810,15 @@
                 if (typeof renderPayerChips === 'function') renderPayerChips();
                 if (typeof renderShareChips === 'function') renderShareChips();
                 if (typeof updateAddExpenseButtonState === 'function') updateAddExpenseButtonState();
+                // Ensure we are actually subscribed (in case auto-resume hasn't attached yet)
+                try {
+                  if (!unsubscribeCloud && syncedTripId) {
+                    if (!db) db = await ensureDbReady();
+                    await subscribeTrip(syncedTripId);
+                  }
+                } catch (e) {
+                  console.warn('subscribe after write-through failed:', e);
+                }
                 showMessage('成功新增支出！（已雲端寫入，稍後自動顯示）', 'success');
                 return; // IMPORTANT: stop here to avoid local push
               } catch (e) {
