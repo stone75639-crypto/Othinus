@@ -442,6 +442,28 @@
           return typeof s === 'string' && s.trim().length >= 16;
         }
 
+        // Ensure UI is viewing the synced trip
+        function ensureViewingSyncedTrip() {
+          try {
+            if (syncedTripId && currentTripId !== syncedTripId) {
+              if (!trips.some(t => t.id === syncedTripId)) {
+                trips.push({
+                  id: syncedTripId,
+                  name: '雲端行程',
+                  createdAt: new Date().toISOString(),
+                  members: Array.isArray(members) ? [...members] : []
+                });
+                localStorage.setItem('travel_trips', JSON.stringify(trips));
+              }
+              currentTripId = syncedTripId;
+              localStorage.setItem('travel_current_trip_id', currentTripId);
+              switchToTrip(currentTripId);
+            }
+          } catch (e) {
+            console.warn('ensureViewingSyncedTrip failed:', e);
+          }
+        }
+
         // Auto resume cloud sync on load (URL ?code has priority)
         async function autoResumeCloudOnLoad() {
           try {
@@ -470,11 +492,13 @@
               setSyncedId(code);
               setCloudStatus('已同步：' + code);
               await subscribeTrip(code);
+              ensureViewingSyncedTrip();
             } else {
               syncedTripId = code;
               setSyncedId(code);
               setCloudStatus('已同步：' + code);
               await subscribeTrip(code);
+              ensureViewingSyncedTrip();
             }
             const input2 = document.getElementById('trip-code-input');
             if (input2) input2.value = code;
@@ -921,6 +945,8 @@
 
           // Group unsubscribe
           unsubscribeCloud = () => { unsubs.forEach(u => { try { u(); } catch(_) {} }); };
+          // 確保畫面看的是已同步的雲端行程
+          ensureViewingSyncedTrip();
         }
 
         // mirror local -> cloud (safe upsert, protect against empty local wiping cloud)
@@ -1022,6 +1048,7 @@
             setSyncedId(code);
             setCloudStatus('已同步：' + code);
             await subscribeTrip(code);
+            ensureViewingSyncedTrip();
             // Do NOT mirror immediately after a cloud hydrate to avoid overwriting cloud with local empty.
             showMessage('Linked to cloud trip: ' + code, 'success');
           } catch (e) {
@@ -1037,6 +1064,7 @@
                   setSyncedId(code);
                   setCloudStatus('已同步：' + code);
                   await subscribeTrip(code);
+                  ensureViewingSyncedTrip();
                   showMessage('Created and linked: ' + code, 'success');
                 } catch (err) {
                   console.error('pushTripToCloud failed:', err);
@@ -1777,6 +1805,9 @@
                 }
               } catch (e) { console.warn('Auto-subscribe on switch failed:', e); }
             })();
+
+            // Align view with synced trip if needed
+            try { ensureViewingSyncedTrip(); } catch (_) {}
         }
 
         /**
@@ -2819,6 +2850,7 @@
                 } catch (e) {
                   console.warn('subscribe after write-through failed:', e);
                 }
+                try { ensureViewingSyncedTrip(); } catch(_) {}
                 showMessage('成功新增支出！（已雲端寫入，稍後自動顯示）', 'success');
                 return; // IMPORTANT: stop here to avoid local push
               } catch (e) {
